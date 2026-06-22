@@ -166,63 +166,42 @@ class _EditProfileViewState extends State<EditProfileView> {
   }
 
   Future<void> _editBirthday() async {
-    final c = context.colors;
-    var picked = DateTime(_bYear ?? 2000, _bMonth ?? 1, _bDay ?? 1);
-    final ok = await showCupertinoModalPopup<bool>(
+    final result = await showCupertinoModalPopup<_BdayResult>(
       context: context,
-      builder: (ctx) => Container(
-        height: 320,
-        color: c.card,
-        child: Column(
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                CupertinoButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: Text('取消', style: TextStyle(color: c.textSecondary)),
-                ),
-                CupertinoButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: Text(
-                    '完成',
-                    style: TextStyle(
-                      color: AppTheme.brand,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            Expanded(
-              child: CupertinoDatePicker(
-                mode: CupertinoDatePickerMode.date,
-                initialDateTime: picked,
-                minimumYear: 1900,
-                maximumDate: DateTime.now(),
-                onDateTimeChanged: (d) => picked = d,
-              ),
-            ),
-          ],
-        ),
+      builder: (_) => _BirthdayPickerSheet(
+        day: _bDay,
+        month: _bMonth,
+        year: _bYear,
+        canClear: _bDay != null,
       ),
     );
-    if (ok != true) return;
+    if (result == null) return; // cancelled
     try {
-      await _client.query({
-        '@type': 'setBirthdate',
-        'birthdate': {
-          '@type': 'birthdate',
-          'day': picked.day,
-          'month': picked.month,
-          'year': picked.year,
-        },
-      });
-      setState(() {
-        _bDay = picked.day;
-        _bMonth = picked.month;
-        _bYear = picked.year;
-      });
+      if (result.clear) {
+        // birthdate: null removes it (TDLib setBirthdate).
+        await _client.query({'@type': 'setBirthdate', 'birthdate': null});
+        setState(() {
+          _bDay = null;
+          _bMonth = null;
+          _bYear = null;
+        });
+      } else {
+        // year 0 = "no year" (month/day only).
+        await _client.query({
+          '@type': 'setBirthdate',
+          'birthdate': {
+            '@type': 'birthdate',
+            'day': result.day,
+            'month': result.month,
+            'year': result.year,
+          },
+        });
+        setState(() {
+          _bDay = result.day;
+          _bMonth = result.month;
+          _bYear = result.year == 0 ? null : result.year;
+        });
+      }
     } catch (_) {
       _toast('保存失败');
     }
@@ -510,6 +489,162 @@ class _EditProfileViewState extends State<EditProfileView> {
                 decoration: BoxDecoration(color: color, shape: BoxShape.circle),
               ),
             Icon(sfIcon('chevron.right'), size: 14, color: c.textTertiary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Result of [_BirthdayPickerSheet]: either a value (year 0 = no year) or clear.
+class _BdayResult {
+  const _BdayResult.set(this.day, this.month, this.year) : clear = false;
+  const _BdayResult.clear() : day = 0, month = 0, year = 0, clear = true;
+  final int day, month, year;
+  final bool clear;
+}
+
+/// A Cupertino month/day(/optional year) wheel picker for the birthday, with a
+/// "无年份" (no-year) option and a 清除生日 (clear) action. No Material.
+class _BirthdayPickerSheet extends StatefulWidget {
+  const _BirthdayPickerSheet({
+    this.day,
+    this.month,
+    this.year,
+    required this.canClear,
+  });
+  final int? day, month, year;
+  final bool canClear;
+
+  @override
+  State<_BirthdayPickerSheet> createState() => _BirthdayPickerSheetState();
+}
+
+class _BirthdayPickerSheetState extends State<_BirthdayPickerSheet> {
+  // Max day per month (Feb allows 29 so leap birthdays work without a year).
+  static const _maxDays = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  late int _month = widget.month ?? 1; // 1..12
+  late int _day = widget.day ?? 1; // 1..31
+  late final List<int> _years; // [thisYear .. 1900]
+  late int _yearIdx; // 0 = 无年份, else _years[idx-1]
+  late final FixedExtentScrollController _mc, _dc, _yc;
+
+  @override
+  void initState() {
+    super.initState();
+    final thisYear = DateTime.now().year;
+    _years = [for (var y = thisYear; y >= 1900; y--) y];
+    final hasYear = widget.year != null && widget.year != 0;
+    _yearIdx = hasYear ? _years.indexOf(widget.year!) + 1 : 0;
+    if (_yearIdx < 0) _yearIdx = 0;
+    _mc = FixedExtentScrollController(initialItem: _month - 1);
+    _dc = FixedExtentScrollController(initialItem: _day - 1);
+    _yc = FixedExtentScrollController(initialItem: _yearIdx);
+  }
+
+  @override
+  void dispose() {
+    _mc.dispose();
+    _dc.dispose();
+    _yc.dispose();
+    super.dispose();
+  }
+
+  void _done() {
+    final year = _yearIdx == 0 ? 0 : _years[_yearIdx - 1];
+    final day = _day.clamp(1, _maxDays[_month - 1]);
+    Navigator.of(context).pop(_BdayResult.set(day, _month, year));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final labelStyle = TextStyle(fontSize: 18, color: c.textPrimary);
+    return Container(
+      height: 332,
+      decoration: BoxDecoration(
+        color: c.card,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                CupertinoButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text('取消', style: TextStyle(color: c.textSecondary)),
+                ),
+                Text(
+                  '生日',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: c.textPrimary,
+                  ),
+                ),
+                CupertinoButton(
+                  onPressed: _done,
+                  child: Text(
+                    '完成',
+                    style: TextStyle(
+                      color: AppTheme.brand,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            Expanded(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: CupertinoPicker(
+                      scrollController: _mc,
+                      itemExtent: 36,
+                      onSelectedItemChanged: (i) => setState(() => _month = i + 1),
+                      children: [
+                        for (var m = 1; m <= 12; m++)
+                          Center(child: Text('$m月', style: labelStyle)),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: CupertinoPicker(
+                      scrollController: _dc,
+                      itemExtent: 36,
+                      onSelectedItemChanged: (i) => _day = i + 1,
+                      children: [
+                        for (var d = 1; d <= 31; d++)
+                          Center(child: Text('$d日', style: labelStyle)),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    flex: 2,
+                    child: CupertinoPicker(
+                      scrollController: _yc,
+                      itemExtent: 36,
+                      onSelectedItemChanged: (i) => _yearIdx = i,
+                      children: [
+                        Center(child: Text('无年份', style: labelStyle)),
+                        for (final y in _years)
+                          Center(child: Text('$y年', style: labelStyle)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (widget.canClear)
+              CupertinoButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(const _BdayResult.clear()),
+                child: Text('清除生日', style: TextStyle(color: AppTheme.tagRed)),
+              ),
           ],
         ),
       ),
