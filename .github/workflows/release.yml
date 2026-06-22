@@ -22,6 +22,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# The publish step (softprops/action-gh-release) needs write access to create
+# the Release and upload the APKs.
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build split-ABI release APKs
