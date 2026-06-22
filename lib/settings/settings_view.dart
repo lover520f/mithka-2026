@@ -17,6 +17,7 @@ import 'edit_profile_view.dart';
 import 'general_settings_view.dart';
 import 'notification_settings_view.dart';
 import 'privacy_security_view.dart';
+import 'proxy_view.dart';
 
 class SettingsView extends StatelessWidget {
   const SettingsView({super.key});
@@ -68,6 +69,14 @@ class SettingsView extends StatelessWidget {
                     '通用',
                     const Color(0xFF8E8E93),
                     () => const GeneralSettingsView(),
+                  ),
+                  const InsetDivider(leadingInset: 56),
+                  _navRow(
+                    context,
+                    'globe',
+                    '代理',
+                    const Color(0xFF34A2DF),
+                    () => const ProxyView(),
                   ),
                   const InsetDivider(leadingInset: 56),
                   _aboutRow(context),
