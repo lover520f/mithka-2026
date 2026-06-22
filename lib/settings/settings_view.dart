@@ -13,6 +13,7 @@ import '../auth/auth_manager.dart';
 import '../components/sf_symbols.dart';
 import '../components/ui_components.dart';
 import '../theme/app_theme.dart';
+import 'about_view.dart';
 import 'edit_profile_view.dart';
 import 'general_settings_view.dart';
 import 'notification_settings_view.dart';
@@ -157,12 +158,18 @@ class SettingsView extends StatelessWidget {
     );
   }
 
-  Widget _aboutRow(BuildContext context) => _rowLabel(
-    context,
-    'info.circle',
-    '关于 Mithkal',
-    const Color(0xFF8E8E93),
-    trailing: 'v1.0',
+  Widget _aboutRow(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onTap: () => Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const AboutView())),
+    child: _rowLabel(
+      context,
+      'info.circle',
+      '关于 Mithkal',
+      const Color(0xFF8E8E93),
+      trailing: 'v1.0',
+    ),
   );
 
   Widget _logoutCard(BuildContext context) {
