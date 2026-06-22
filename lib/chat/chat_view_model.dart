@@ -325,7 +325,10 @@ class ChatViewModel extends ChangeNotifier {
 
   /// 清单: send a checklist (to-do list). Creating checklists needs Premium.
   void sendChecklist(String title, List<String> tasks) {
-    final items = tasks.map((t) => t.trim()).where((t) => t.isNotEmpty).toList();
+    final items = tasks
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toList();
     if (title.trim().isEmpty || items.isEmpty) return;
     _client.send({
       '@type': 'sendMessage',

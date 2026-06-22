@@ -20,13 +20,22 @@ void main() {
   });
 
   test('as-you-type: groups per country and never loses digits', () {
-    for (final n in ['+8613800138000', '+14155550123', '+61412345678', '+442071838750']) {
+    for (final n in [
+      '+8613800138000',
+      '+14155550123',
+      '+61412345678',
+      '+442071838750',
+    ]) {
       final out = fmt(n);
       // digits preserved exactly
       expect(out.replaceAll(RegExp(r'[^0-9]'), ''), n.substring(1));
       // international format: starts with '+' and is grouped with a separator
       expect(out.startsWith('+'), isTrue, reason: out);
-      expect(out.contains(RegExp(r'[\s-]')), isTrue, reason: 'should group: $out');
+      expect(
+        out.contains(RegExp(r'[\s-]')),
+        isTrue,
+        reason: 'should group: $out',
+      );
     }
   });
 

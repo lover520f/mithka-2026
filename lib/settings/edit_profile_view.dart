@@ -605,7 +605,8 @@ class _BirthdayPickerSheetState extends State<_BirthdayPickerSheet> {
                     child: CupertinoPicker(
                       scrollController: _mc,
                       itemExtent: 36,
-                      onSelectedItemChanged: (i) => setState(() => _month = i + 1),
+                      onSelectedItemChanged: (i) =>
+                          setState(() => _month = i + 1),
                       children: [
                         for (var m = 1; m <= 12; m++)
                           Center(child: Text('$m月', style: labelStyle)),

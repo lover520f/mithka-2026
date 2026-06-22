@@ -49,7 +49,10 @@ class _VideoStickerViewState extends State<VideoStickerView> {
     final ref = widget.file;
     if (_loadedId == ref.id) return;
     _loadedId = ref.id;
-    final webp = await _transcodes.putIfAbsent(ref.id, () => _transcode(ref.id));
+    final webp = await _transcodes.putIfAbsent(
+      ref.id,
+      () => _transcode(ref.id),
+    );
     if (!mounted || _loadedId != ref.id || webp == null) return;
     setState(() => _webp = webp);
     widget.onReady?.call();
