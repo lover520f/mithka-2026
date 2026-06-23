@@ -13,7 +13,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
-        android:label="Mithkal"
+        android:label="Mithka"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -67,6 +67,14 @@
             <action android:name="android.intent.action.VIEW"/>
             <category android:name="android.intent.category.BROWSABLE"/>
             <data android:scheme="http"/>
+        </intent>
+        <!-- So open_filex can find an app to open a downloaded file. On Android 11+
+             package-visibility filtering hides file-viewer apps from intent
+             resolution unless the ACTION_VIEW intent is declared here; without it
+             OpenFilex.open() always reports "no app". -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:mimeType="*/*"/>
         </intent>
     </queries>
 </manifest>

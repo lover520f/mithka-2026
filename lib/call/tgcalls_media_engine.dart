@@ -21,8 +21,8 @@ class TgcallsMediaEngine implements CallMediaEngine {
     _events.receiveBroadcastStream().listen(_onEvent, onError: (_) {});
   }
 
-  static const _methods = MethodChannel('mithkal/call_media');
-  static const _events = EventChannel('mithkal/call_media/events');
+  static const _methods = MethodChannel('mithka/call_media');
+  static const _events = EventChannel('mithka/call_media/events');
 
   void Function(Uint8List data)? _onSignalingData;
 
@@ -77,8 +77,15 @@ class TgcallsMediaEngine implements CallMediaEngine {
   }
 
   @override
-  void setVideoEnabled(bool enabled) {
-    _methods.invokeMethod('setVideoEnabled', enabled).catchError((Object _) {});
+  void setVideoEnabled(bool enabled, {bool front = true}) {
+    _methods
+        .invokeMethod('setVideoEnabled', {'enabled': enabled, 'front': front})
+        .catchError((Object _) {});
+  }
+
+  @override
+  void switchCamera() {
+    _methods.invokeMethod('switchCamera').catchError((Object _) {});
   }
 
   @override

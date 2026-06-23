@@ -36,6 +36,9 @@ const Map<String, IconData> _map = {
   'circle.dashed': CupertinoIcons.smallcircle_circle,
   'person.crop.circle': CupertinoIcons.person_crop_circle,
   'person.crop.circle.fill': CupertinoIcons.person_crop_circle_fill,
+  'square.and.pencil': CupertinoIcons.square_pencil,
+  'pencil': CupertinoIcons.pencil,
+  'square.grid.2x2': CupertinoIcons.square_grid_2x2,
 
   // Appearance / settings
   'circle.lefthalf.filled': Icons.contrast,
@@ -70,6 +73,7 @@ const Map<String, IconData> _map = {
   'photo': CupertinoIcons.photo,
   'photo.fill': CupertinoIcons.photo_fill,
   'camera.fill': CupertinoIcons.camera_fill,
+  'camera.rotate': CupertinoIcons.switch_camera_solid,
   'phone.fill': CupertinoIcons.phone_fill,
   'phone.down.fill': CupertinoIcons.phone_down_fill,
   'video.fill': CupertinoIcons.video_camera_solid,

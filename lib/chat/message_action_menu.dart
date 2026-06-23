@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 
 import '../components/sf_symbols.dart';
 import '../tdlib/td_models.dart';
+import 'emoji_store.dart';
 
 enum MessageAction {
   copy('doc', '复制'),
@@ -18,6 +19,7 @@ enum MessageAction {
   forward('arrowshape.turn.up.left', '转发'),
   save('star.fill', '收藏'),
   saveSticker('plus.circle', '添加'),
+  viewStickerSet('square.grid.2x2', '表情包'),
   delete('trash', '删除');
 
   const MessageAction(this.glyph, this.label);
@@ -55,7 +57,15 @@ class MessageActionMenu extends StatelessWidget {
     result.add(MessageAction.forward);
     result.add(MessageAction.save);
     // 添加 — add any sticker (tgs / webm / webp) to favorites.
-    if (message.stickerFileId != null) result.add(MessageAction.saveSticker);
+    // Non-premium users can't add custom emoji / emoji sets, so hide 添加 + 表情包
+    // on single-emoji messages for them (regular stickers stay addable).
+    final canAddEmoji = !message.isAnimatedEmoji || EmojiStore.shared.isPremium;
+    if (message.stickerFileId != null && canAddEmoji) {
+      result.add(MessageAction.saveSticker);
+    }
+    if (message.stickerSetId != null && canAddEmoji) {
+      result.add(MessageAction.viewStickerSet);
+    }
     result.add(MessageAction.delete);
     return result;
   }
@@ -65,9 +75,12 @@ class MessageActionMenu extends StatelessWidget {
     final actions = _actions;
     // A single content-width row — never pad out to a second row when there
     // are only a handful of actions. Wraps to a second line only past 5.
+    // Single horizontal row (scrolls if it ever overflows) — never a 5+1 wrap.
     return Container(
-      constraints: const BoxConstraints(maxWidth: 300),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width - 24,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
       decoration: BoxDecoration(
         color: _surface,
         borderRadius: BorderRadius.circular(16),
@@ -79,38 +92,44 @@ class MessageActionMenu extends StatelessWidget {
           ),
         ],
       ),
-      child: Wrap(
-        alignment: WrapAlignment.center,
-        children: [
-          for (final action in actions)
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => onSelect(action),
-              child: SizedBox(
-                width: 56,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      sfIcon(action.glyph),
-                      size: 22,
-                      color: action.isDestructive ? _destructive : Colors.white,
-                    ),
-                    const SizedBox(height: 7),
-                    Text(
-                      action.label,
-                      style: TextStyle(
-                        fontSize: 12,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final action in actions)
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => onSelect(action),
+                child: SizedBox(
+                  width: 52,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        sfIcon(action.glyph),
+                        size: 22,
                         color: action.isDestructive
                             ? _destructive
                             : Colors.white,
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 7),
+                      Text(
+                        action.label,
+                        maxLines: 1,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: action.isDestructive
+                              ? _destructive
+                              : Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

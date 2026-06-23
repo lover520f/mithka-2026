@@ -1,5 +1,5 @@
-name: mithkal
-description: "Mithkal — a cross-platform Telegram client (Flutter), built on TDLib."
+name: mithka
+description: "Mithka — a cross-platform Telegram client (Flutter), built on TDLib."
 publish_to: 'none'
 version: 0.1.14+14
 
@@ -55,7 +55,12 @@ dependencies:
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
   apple_maps_flutter: ^1.4.0
-  ffmpeg_kit_flutter_new: ^4.2.1
+
+  # Animated .webm (VP9 + alpha) video stickers. fvp is an MDK/FFmpeg backend for
+  # video_player that decodes VP8/VP9 transparent WebM (Telegram video stickers) —
+  # replaces the old ffmpeg_kit→WebP transcode.
+  video_player: ^2.9.2
+  fvp: ^0.37.2
 
 dev_dependencies:
   flutter_test:
@@ -73,3 +78,5 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/penguin.png

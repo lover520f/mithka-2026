@@ -22,8 +22,8 @@ import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
 import 'animated_sticker_view.dart';
 import 'custom_emoji.dart';
+import 'file_detail_view.dart';
 import 'video_sticker_view.dart';
-import 'file_opener.dart';
 import 'link_handler.dart';
 import 'voice_audio.dart';
 
@@ -44,6 +44,7 @@ class MessageBubble extends StatefulWidget {
     this.onAvatarLongPress,
     this.onOpenImage,
     this.onToggleReaction,
+    this.onRedial,
     this.isRead = false,
   });
 
@@ -61,6 +62,7 @@ class MessageBubble extends StatefulWidget {
   final ValueChanged<ChatMessage>? onAvatarLongPress;
   final ValueChanged<ChatMessage>? onOpenImage;
   final ValueChanged<MessageReaction>? onToggleReaction;
+  final ValueChanged<bool>? onRedial; // tap a call log to redial (bool = isVideo)
   final bool isRead; // outgoing message read by the peer (✓✓)
 
   @override
@@ -317,6 +319,7 @@ class _MessageBubbleState extends State<MessageBubble> {
   // MARK: - Content router
 
   Widget _contentBody(bool outgoing) {
+    if (message.isCall) return _callBubble(outgoing);
     if (message.animatedSticker != null) {
       final s = _stickerSize();
       return SizedBox(
@@ -343,6 +346,7 @@ class _MessageBubbleState extends State<MessageBubble> {
         child: Stack(
           fit: StackFit.expand,
           children: [
+            // Static thumbnail until the webm decodes its first frame.
             if (message.image != null && !_videoStickerReady)
               TDImage(photo: message.image, cornerRadius: 8),
             VideoStickerView(
@@ -399,6 +403,74 @@ class _MessageBubbleState extends State<MessageBubble> {
         ],
       ),
     );
+  }
+
+  // MARK: - Call log bubble (QQ-style: icon + status, tap to redial)
+
+  /// A messageCall rendered like QQ's call-log bubble: a phone/video glyph plus
+  /// the call's outcome (通话时长 MM:SS when it connected, otherwise 已取消 /
+  /// 未接听 / 已拒绝). Tapping the bubble places the same kind of call again
+  /// (点击重拨). The glyph sits toward the bubble's outer edge like QQ.
+  Widget _callBubble(bool outgoing) {
+    final c = context.colors;
+    final isVideo = message.callIsVideo;
+    final connected = message.callDuration > 0;
+    final baseColor = outgoing
+        ? AppTheme.bubbleOutgoingText
+        : c.bubbleIncomingText;
+
+    String label;
+    bool missed = false;
+    if (connected) {
+      label = '通话时长 ${_formatCallDuration(message.callDuration)}';
+    } else {
+      switch (message.callDiscardReason) {
+        case 'callDiscardReasonDeclined':
+          label = outgoing ? '对方已拒绝' : '已拒绝';
+          missed = !outgoing;
+        case 'callDiscardReasonMissed':
+          label = outgoing ? '无人接听' : '未接听';
+          missed = !outgoing;
+        default: // HungUp / Empty / Disconnected with no duration
+          label = '已取消';
+      }
+    }
+    final accent = missed ? const Color(0xFFFF3B30) : baseColor;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => widget.onRedial?.call(isVideo),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: outgoing ? AppTheme.bubbleOutgoing : c.bubbleIncoming,
+          borderRadius: BorderRadius.circular(6),
+          border: outgoing ? null : Border.all(color: c.divider, width: 0.5),
+        ),
+        // Call glyph always on the left of the status, both directions.
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              sfIcon(isVideo ? 'video.fill' : 'phone.fill'),
+              size: 18,
+              color: accent,
+            ),
+            const SizedBox(width: 8),
+            Text(label, style: TextStyle(fontSize: 15, color: accent)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatCallDuration(int seconds) {
+    final s = seconds < 0 ? 0 : seconds;
+    String two(int v) => v.toString().padLeft(2, '0');
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    final sec = s % 60;
+    return h > 0 ? '${two(h)}:${two(m)}:${two(sec)}' : '${two(m)}:${two(sec)}';
   }
 
   /// 转发 attribution shown above forwarded content: `转发自 …`.
@@ -469,8 +541,10 @@ class _MessageBubbleState extends State<MessageBubble> {
     );
   }
 
-  static final _urlRegExp = RegExp(
-    r'((https?:\/\/|www\.|t\.me\/|tg:\/\/)[^\s]+)',
+  // URLs (group 1) and @username mentions (group 2). The lookbehind stops email
+  // local-parts (user@host) and @@ from being matched as mentions.
+  static final _linkRegExp = RegExp(
+    r'((?:https?:\/\/|www\.|t\.me\/|tg:\/\/)[^\s]+)|(?<![\w@])(@[A-Za-z0-9_]{4,32})',
     caseSensitive: false,
   );
 
@@ -541,18 +615,27 @@ class _MessageBubbleState extends State<MessageBubble> {
   List<InlineSpan> _linkSpans(String text, Color base, Color link) {
     final spans = <InlineSpan>[];
     var last = 0;
-    for (final m in _urlRegExp.allMatches(text)) {
+    for (final m in _linkRegExp.allMatches(text)) {
       if (m.start > last) {
         spans.add(TextSpan(text: text.substring(last, m.start)));
       }
-      final url = text.substring(m.start, m.end);
+      final matched = text.substring(m.start, m.end);
+      final isMention = m.group(2) != null;
+      // @username resolves via t.me — openLink routes it through TDLib.
+      final target = isMention
+          ? 'https://t.me/${matched.substring(1)}'
+          : matched;
       final recognizer = TapGestureRecognizer()
-        ..onTap = () => openLink(context, url);
+        ..onTap = () => openLink(context, target);
       _linkRecognizers.add(recognizer);
       spans.add(
         TextSpan(
-          text: url,
-          style: TextStyle(color: link, decoration: TextDecoration.underline),
+          text: matched,
+          style: TextStyle(
+            color: link,
+            // Mentions are colored but not underlined (URLs keep the underline).
+            decoration: isMention ? null : TextDecoration.underline,
+          ),
           recognizer: recognizer,
         ),
       );
@@ -577,7 +660,9 @@ class _MessageBubbleState extends State<MessageBubble> {
           child: SizedBox(
             width: size.width,
             height: size.height,
-            child: TDImage(photo: image, cornerRadius: 10),
+            // Fit (contain) so the whole image shows at its aspect ratio — never
+            // cropped. The box is already aspect-correct when dimensions are known.
+            child: TDImage(photo: image, cornerRadius: 10, fit: BoxFit.contain),
           ),
         ),
         if (caption != null) ...[
@@ -816,7 +901,9 @@ class _MessageBubbleState extends State<MessageBubble> {
     final c = context.colors;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => openDocument(context, doc),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => FileDetailView(doc: doc)),
+      ),
       child: Container(
         width: 244,
         padding: const EdgeInsets.all(12),

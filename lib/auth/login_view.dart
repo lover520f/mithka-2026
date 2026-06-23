@@ -135,13 +135,17 @@ class _LoginViewState extends State<LoginView> {
                 ),
               ],
             ),
-            child: const Center(
-              child: Text('🐧', style: TextStyle(fontSize: 48, height: 1.0)),
+            child: const Padding(
+              padding: EdgeInsets.all(10),
+              child: Image(
+                image: AssetImage('assets/penguin.png'),
+                fit: BoxFit.contain,
+              ),
             ),
           ),
           const SizedBox(height: 14),
           Text(
-            'Mithkal',
+            'Mithka',
             style: TextStyle(
               fontSize: 26,
               fontWeight: FontWeight.bold,
@@ -481,11 +485,13 @@ class _InputFieldState extends State<InputField> {
               controller: widget.controller,
               obscureText: _obscure,
               // Force a full QWERTY keyboard for secure fields so they're never
-              // numeric. (visiblePassword can render numeric-only on some Android
-              // IMEs; plain text + obscureText is a reliable full keyboard.)
+              // numeric. A plain obscured field maps to TYPE_TEXT_VARIATION_PASSWORD,
+              // which Chinese/ColorOS IMEs render as a numeric PIN pad; visiblePassword
+              // (TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) gives a real alphanumeric
+              // keyboard while Flutter still masks the text via obscureText.
               keyboardType:
                   widget.keyboardType ??
-                  (widget.secure ? TextInputType.text : null),
+                  (widget.secure ? TextInputType.visiblePassword : null),
               inputFormatters: widget.inputFormatters,
               onChanged: widget.onChanged,
               autocorrect: false,

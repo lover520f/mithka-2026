@@ -25,7 +25,7 @@ class StickerPack {
   });
   final int id;
   final String title;
-  final TdFileRef? cover;
+  final StickerItem? cover; // format-aware so tgs/webm set icons render
   List<StickerItem> stickers;
   bool loaded;
 }
@@ -62,7 +62,7 @@ class StickerStore extends ChangeNotifier {
           StickerPack(
             id: recentPackId,
             title: '最近',
-            cover: items.first.thumb,
+            cover: items.first,
             stickers: items,
             loaded: true,
           ),
@@ -80,7 +80,7 @@ class StickerStore extends ChangeNotifier {
         final id = info.int64('id');
         final title = info.str('title');
         if (id == null || title == null) continue;
-        result.add(StickerPack(id: id, title: title, cover: _coverRef(info)));
+        result.add(StickerPack(id: id, title: title, cover: _coverItem(info)));
       }
     } catch (_) {}
 
@@ -107,14 +107,27 @@ class StickerStore extends ChangeNotifier {
     } catch (_) {}
   }
 
-  TdFileRef? _coverRef(Map<String, dynamic> info) {
-    final thumb = TDParse.fileRef(info.obj('thumbnail')?.obj('file'));
-    if (thumb != null) return thumb;
+  /// Cover for the set-icon tab. Prefer the first cover sticker (it carries its
+  /// format, so an animated set icon renders + animates); else synthesize one
+  /// from the set thumbnail (which may itself be tgs/webm/webp).
+  StickerItem? _coverItem(Map<String, dynamic> info) {
     final covers = info.objects('covers');
     if (covers != null && covers.isNotEmpty) {
       final parsed = parseStickers([covers.first]);
-      if (parsed.isNotEmpty) return parsed.first.thumb;
+      if (parsed.isNotEmpty) return parsed.first;
     }
-    return null;
+    final thumb = info.obj('thumbnail');
+    final file = TDParse.fileRef(thumb?.obj('file'));
+    if (file == null) return null;
+    final fmt = thumb?.obj('format')?.type;
+    return StickerItem(
+      id: file.id,
+      width: 100,
+      height: 100,
+      emoji: '',
+      isAnimated: fmt == 'thumbnailFormatTgs',
+      isVideo: fmt == 'thumbnailFormatWebm',
+      thumb: file,
+    );
   }
 }

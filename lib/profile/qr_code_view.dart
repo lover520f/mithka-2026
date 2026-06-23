@@ -280,7 +280,7 @@ class _QRCodeViewState extends State<QRCodeView> {
             data: _link!,
             version: QrVersions.auto,
             size: 224,
-            backgroundColor: Colors.white,
+            backgroundColor: Colors.transparent,
             errorCorrectionLevel: QrErrorCorrectLevel.H,
             // Fancy QQ-style QR: rounded position eyes + circular data dots.
             eyeStyle: QrEyeStyle(

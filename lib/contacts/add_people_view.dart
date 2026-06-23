@@ -323,7 +323,7 @@ class _AddPeopleViewState extends State<AddPeopleView> {
                 textInputAction: TextInputAction.search,
                 style: TextStyle(fontSize: 15, color: c.textPrimary),
                 decoration: InputDecoration(
-                  hintText: _mode == 0 ? 'QQ号/用户名/手机号' : '群名称/链接',
+                  hintText: _mode == 0 ? '用户名/手机号' : '群名称/链接',
                   hintStyle: TextStyle(color: c.textTertiary),
                   border: InputBorder.none,
                   isCollapsed: true,

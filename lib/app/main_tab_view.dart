@@ -22,6 +22,7 @@ import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_controller.dart';
+import '../update/update_checker.dart';
 
 /// Global unread badge source (unmuted chat count).
 class UnreadBadgeModel extends ChangeNotifier {
@@ -53,6 +54,15 @@ class _MainTabViewState extends State<MainTabView> {
   late final dc.TabBarVisibility _tabBar = dc.TabBarVisibility();
   late final UnreadBadgeModel _unread = UnreadBadgeModel()..start();
   late final CallManager _calls = CallManager()..start();
+
+  @override
+  void initState() {
+    super.initState();
+    // Android-only: check GitHub Releases for a newer same-ABI build (once).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) UpdateChecker.maybePrompt(context);
+    });
+  }
 
   @override
   void dispose() {
@@ -284,7 +294,7 @@ class _ClassicTabBar extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: SizedBox(
-          height: 50,
+          height: 62,
           child: Row(
             children: [
               for (var i = 0; i < items.length; i++)
@@ -297,14 +307,14 @@ class _ClassicTabBar extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         SizedBox(
-                          height: 24,
+                          height: 28,
                           child: Stack(
                             clipBehavior: Clip.none,
                             alignment: Alignment.center,
                             children: [
                               Icon(
                                 sfIcon(items[i].$2),
-                                size: 23,
+                                size: 26,
                                 color: selection == i
                                     ? AppTheme.brand
                                     : c.textTertiary,
@@ -322,7 +332,7 @@ class _ClassicTabBar extends StatelessWidget {
                         Text(
                           items[i].$1,
                           style: TextStyle(
-                            fontSize: 10,
+                            fontSize: 11,
                             color: selection == i
                                 ? AppTheme.brand
                                 : c.textTertiary,

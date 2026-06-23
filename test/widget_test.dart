@@ -1,8 +1,8 @@
 // Unit tests for the ported pure logic (date formatting, JSON helpers, parsing).
 
-import 'package:mithkal/tdlib/json_helpers.dart';
-import 'package:mithkal/tdlib/td_models.dart';
-import 'package:mithkal/theme/date_text.dart';
+import 'package:mithka/tdlib/json_helpers.dart';
+import 'package:mithka/tdlib/td_models.dart';
+import 'package:mithka/theme/date_text.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

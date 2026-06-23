@@ -93,6 +93,14 @@ class TdFileCenter {
     if (existing != null) return existing;
     final completer = Completer<String?>();
     _waiters.putIfAbsent(k, () => []).add(completer);
-    return completer.future;
+    // Don't wait forever if the download stalls/fails — callers (e.g. the file
+    // opener) then surface "下载失败" instead of a stuck spinner.
+    return completer.future.timeout(
+      const Duration(seconds: 180),
+      onTimeout: () {
+        _waiters[k]?.remove(completer);
+        return null;
+      },
+    );
   }
 }

@@ -88,7 +88,7 @@ class AuthManager extends ChangeNotifier {
   // MARK: - Authorization state machine
 
   void _handle(Map<String, dynamic> state) {
-    debugPrint('🔑 [Mithkal] authorizationState → ${state.type ?? 'nil'}');
+    debugPrint('🔑 [Mithka] authorizationState → ${state.type ?? 'nil'}');
     switch (state.type) {
       case 'authorizationStateWaitTdlibParameters':
         break; // parameters sent by TdClient (per-account bootstrap)

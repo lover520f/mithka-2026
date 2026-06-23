@@ -51,22 +51,32 @@ class ThemeController extends ChangeNotifier {
     _brandColor = Color(
       _prefs.getInt(_brandKey) ?? (0xFF000000 | AppTheme.defaultBrand),
     );
+    _fontScale = _prefs.getDouble(_fontKey) ?? 1.0;
     AppTheme.applyBrand(_brandColor); // before the first MaterialApp build
   }
 
   static const _modeKey = 'appearanceMode';
   static const _tabKey = 'tabBarStyle';
   static const _brandKey = 'brandColor';
+  static const _fontKey = 'fontScale';
+
+  /// Selectable text-scale steps for the 字体大小 control (小 / 标准 / 大 / 超大).
+  /// Capped at 1.3 so fixed-height chrome doesn't overflow badly.
+  static const List<double> fontScaleSteps = [0.85, 1.0, 1.15, 1.3];
 
   final SharedPreferences _prefs;
   late AppearanceMode _mode;
   late TabBarStyle _tabBarStyle;
   late Color _brandColor;
+  late double _fontScale;
 
   AppearanceMode get mode => _mode;
   TabBarStyle get tabBarStyle => _tabBarStyle;
   ThemeMode get themeMode => _mode.themeMode;
   Color get brandColor => _brandColor;
+
+  /// App-wide text scale factor, applied at the root via MediaQuery.textScaler.
+  double get fontScale => _fontScale;
 
   set mode(AppearanceMode value) {
     _mode = value;
@@ -85,6 +95,12 @@ class ThemeController extends ChangeNotifier {
     _brandColor = value;
     _prefs.setInt(_brandKey, value.toARGB32());
     AppTheme.applyBrand(value);
+    notifyListeners();
+  }
+
+  set fontScale(double value) {
+    _fontScale = value;
+    _prefs.setDouble(_fontKey, value);
     notifyListeners();
   }
 }

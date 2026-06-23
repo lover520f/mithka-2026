@@ -181,6 +181,9 @@ class ChatMessage {
     this.senderName,
     this.isService = false,
     this.isCall = false,
+    this.callIsVideo = false,
+    this.callDiscardReason,
+    this.callDuration = 0,
     this.contentType,
     this.senderId,
     this.senderPhoto,
@@ -193,6 +196,8 @@ class ChatMessage {
     this.animatedSticker,
     this.videoSticker,
     this.stickerFileId,
+    this.stickerSetId,
+    this.isAnimatedEmoji = false,
     this.location,
     this.voice,
     this.replyToMessageId,
@@ -207,6 +212,11 @@ class ChatMessage {
   String? senderName;
   bool isService;
   bool isCall; // messageCall — a call log; not reactable
+  bool callIsVideo; // messageCall.is_video
+  // messageCall.discard_reason @type: callDiscardReasonMissed / Declined /
+  // Disconnected / HungUp / Empty. Null until the call ends.
+  String? callDiscardReason;
+  int callDuration; // messageCall.duration, seconds (0 if never connected)
   /// Raw TDLib content @type (messageText / messagePhoto / messageAudio / …).
   /// Kept so we can distinguish kinds the lossy media fields can't (e.g. a
   /// photo vs a video-thumb, or plain text vs an audio/poll placeholder).
@@ -222,6 +232,8 @@ class ChatMessage {
   TdFileRef? animatedSticker; // .tgs (Lottie) sticker file
   TdFileRef? videoSticker; // .webm video sticker file
   int? stickerFileId; // any sticker's file id (for "add to favorites")
+  int? stickerSetId; // the sticker's set id (for 表情详情)
+  bool isAnimatedEmoji; // single-emoji message (messageAnimatedEmoji)
   MessageLocation? location;
   MessageVoice? voice;
 
@@ -407,6 +419,11 @@ abstract final class TDParse {
     final content = message.obj('content');
     final service = isServiceContent(content?.type);
     final isCall = content?.type == 'messageCall';
+    final callIsVideo = isCall && (content?.boolean('is_video') ?? false);
+    final callDuration = isCall ? (content?.integer('duration') ?? 0) : 0;
+    final callDiscardReason = isCall
+        ? content?.obj('discard_reason')?.type
+        : null;
     final text = service
         ? serviceText(content)
         : (content != null ? messageText(content) : '[消息]');
@@ -459,6 +476,9 @@ abstract final class TDParse {
         date: date,
         isService: service,
         isCall: isCall,
+        callIsVideo: callIsVideo,
+        callDiscardReason: callDiscardReason,
+        callDuration: callDuration,
         contentType: content?.type,
         senderId: senderId,
         image: media.image,
@@ -468,6 +488,8 @@ abstract final class TDParse {
         animatedSticker: media.animated,
         videoSticker: media.videoSticker,
         stickerFileId: media.stickerFileId,
+        stickerSetId: media.stickerSetId,
+        isAnimatedEmoji: media.isAnimatedEmoji,
         location: locationAttachment(content),
         voice: voiceAttachment(content),
         replyToMessageId: replyToMessageId,
@@ -581,13 +603,42 @@ abstract final class TDParse {
           final stickerFile = fileRef(sticker.obj('sticker'));
           final w = sticker.integer('width'), h = sticker.integer('height');
           final fmt = sticker.obj('format')?.type;
+          final isTgs = fmt == 'stickerFormatTgs';
+          final isWebm = fmt == 'stickerFormatWebm';
           return MediaAttachment(
-            image: thumb ?? stickerFile,
+            // Static (.webp) stickers are shown directly via `image`, so point at
+            // the full sticker file — the thumbnail is low-res and looks blurry
+            // scaled up. Animated (.tgs) / video (.webm) keep the thumb only as a
+            // placeholder behind the rendered animation.
+            image: (isTgs || isWebm) ? (thumb ?? stickerFile) : (stickerFile ?? thumb),
             width: w,
             height: h,
-            animated: fmt == 'stickerFormatTgs' ? stickerFile : null,
-            videoSticker: fmt == 'stickerFormatWebm' ? stickerFile : null,
+            animated: isTgs ? stickerFile : null,
+            videoSticker: isWebm ? stickerFile : null,
             stickerFileId: stickerFile?.id,
+            stickerSetId: sticker.int64('set_id'),
+          );
+        }
+      case 'messageAnimatedEmoji':
+        // A lone emoji → TDLib sends its animated sticker (usually .tgs); render
+        // it like a sticker so single emoji animate instead of "[动画表情]" text.
+        final sticker = content.obj('animated_emoji')?.obj('sticker');
+        if (sticker != null) {
+          final thumb = fileRef(sticker.obj('thumbnail')?.obj('file'));
+          final stickerFile = fileRef(sticker.obj('sticker'));
+          final w = sticker.integer('width'), h = sticker.integer('height');
+          final fmt = sticker.obj('format')?.type;
+          final isTgs = fmt == 'stickerFormatTgs';
+          final isWebm = fmt == 'stickerFormatWebm';
+          return MediaAttachment(
+            image: (isTgs || isWebm) ? (thumb ?? stickerFile) : (stickerFile ?? thumb),
+            width: w,
+            height: h,
+            animated: isTgs ? stickerFile : null,
+            videoSticker: isWebm ? stickerFile : null,
+            stickerFileId: stickerFile?.id,
+            stickerSetId: sticker.int64('set_id'),
+            isAnimatedEmoji: true,
           );
         }
       case 'messageAnimation':
@@ -850,6 +901,8 @@ class MediaAttachment {
     this.animated,
     this.videoSticker,
     this.stickerFileId,
+    this.stickerSetId,
+    this.isAnimatedEmoji = false,
   });
   final TdFileRef? image;
   final int? width;
@@ -858,4 +911,6 @@ class MediaAttachment {
   final TdFileRef? animated; // .tgs Lottie sticker
   final TdFileRef? videoSticker; // .webm video sticker
   final int? stickerFileId; // any sticker's file id (for "add to favorites")
+  final int? stickerSetId; // the sticker's set id (for 表情详情)
+  final bool isAnimatedEmoji; // single-emoji message (messageAnimatedEmoji)
 }

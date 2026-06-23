@@ -166,7 +166,7 @@ class SettingsView extends StatelessWidget {
     child: _rowLabel(
       context,
       'info.circle',
-      '关于 Mithkal',
+      '关于 Mithka',
       const Color(0xFF8E8E93),
       trailing: 'v1.0',
     ),

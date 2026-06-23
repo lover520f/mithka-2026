@@ -1,4 +1,4 @@
-package ad.neko.mithkal
+package ad.neko.mithka
 
 import android.content.Context
 import android.media.AudioManager
@@ -10,18 +10,28 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import io.github.pytgcalls.NTgCalls
 import io.github.pytgcalls.media.AudioDescription
+import io.github.pytgcalls.media.Frame
+import io.github.pytgcalls.media.FrameData
 import io.github.pytgcalls.media.MediaDescription
 import io.github.pytgcalls.media.MediaSource
+import io.github.pytgcalls.media.StreamDevice
 import io.github.pytgcalls.media.StreamMode
 import io.github.pytgcalls.media.VideoDescription
 import io.github.pytgcalls.p2p.RTCServer
+import org.webrtc.ContextUtils
+import org.webrtc.EglBase
+import org.webrtc.JavaI420Buffer
+import org.webrtc.TextureViewRenderer
+import org.webrtc.VideoFrame
+import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
  * Bridges the Dart `CallMediaEngine` to ntgcalls' 1:1 P2P API.
  *
  * Flutter (TgcallsMediaEngine) sends the TDLib `callStateReady` payload over the
- * `mithkal/call_media` MethodChannel; we drive ntgcalls with it:
+ * `mithka/call_media` MethodChannel; we drive ntgcalls with it:
  *   createP2PCall → setStreamSources(mic[/camera]) → skipExchange(key) → connectP2P
  * (TDLib already performed the DH key exchange, so we `skipExchange`.)
  *
@@ -30,13 +40,18 @@ import java.util.concurrent.Executors
  * Dart over the `events` EventChannel → Dart relays via TDLib sendCallSignalingData;
  * inbound TDLib updateNewCallSignalingData arrives back as `receiveSignaling` →
  * ntgcalls.sendSignalingData. Without this loop the call never leaves "connecting".
+ *
+ * Video: the capture side adds the front camera (DEVICE) so the peer sees us; the
+ * playback side adds an EXTERNAL camera so ntgcalls delivers decoded remote frames
+ * to our `FrameCallback`, which we wrap as WebRTC `VideoFrame`s and push into the
+ * `TextureViewRenderer`s embedded by the Flutter PlatformView (see VideoView.kt).
  */
 class CallMediaPlugin(
     private val context: Context,
     messenger: BinaryMessenger,
 ) {
-    private val methods = MethodChannel(messenger, "mithkal/call_media")
-    private val events = EventChannel(messenger, "mithkal/call_media/events")
+    private val methods = MethodChannel(messenger, "mithka/call_media")
+    private val events = EventChannel(messenger, "mithka/call_media/events")
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -46,11 +61,40 @@ class CallMediaPlugin(
     private var eventSink: EventChannel.EventSink? = null
     private var prevAudioMode = AudioManager.MODE_NORMAL
 
+    // Shared GL context + the role-keyed renderers the PlatformView registers.
+    // Remote frames from ntgcalls are routed to renderers["remote"].
+    private var egl: EglBase? = null
+    private val renderers = ConcurrentHashMap<String, TextureViewRenderer>()
+
+    // We capture our own camera (CameraCapture) and feed ntgcalls an EXTERNAL stream,
+    // because ntgcalls' DEVICE capture never surfaces frames for a local preview.
+    private var camera: CameraCapture? = null
+
+    @Volatile
+    private var sawRemoteFrame = false
+
+    // Which physical camera the CAPTURE stream uses. Flipped by switchCamera().
+    @Volatile
+    private var useFrontCamera = true
+
     companion object {
         // ntgcalls' Android device metadata is synthetic JSON; only is_microphone
         // is read (it must match the stream direction).
         private const val MIC_META = "{\"is_microphone\":true}"
         private const val SPK_META = "{\"is_microphone\":false}"
+
+        // ntgcalls reads org.webrtc.ApplicationContextProvider →
+        // ContextUtils.getApplicationContext(); without this, camera enumeration
+        // SIGABRTs. Initialize exactly once before any getMediaDevices()/camera use.
+        @Volatile
+        private var webrtcContextReady = false
+
+        @Synchronized
+        private fun ensureWebRtcContext(context: Context) {
+            if (webrtcContextReady) return
+            ContextUtils.initialize(context.applicationContext)
+            webrtcContextReady = true
+        }
     }
 
     init {
@@ -94,7 +138,14 @@ class CallMediaPlugin(
                     .onSuccess { reply(result, null) }.onFailure { reply(result, it) } }
                 "setSpeaker" -> { setSpeaker(call.arguments as Boolean); result.success(null) }
                 "setVideoEnabled" -> worker.execute {
-                    runCatching { setVideoEnabled(call.arguments as Boolean) }
+                    runCatching {
+                        @Suppress("UNCHECKED_CAST")
+                        val args = call.arguments as Map<String, Any?>
+                        (args["front"] as? Boolean)?.let { useFrontCamera = it }
+                        setVideoEnabled(args["enabled"] as Boolean)
+                    }.onSuccess { reply(result, null) }.onFailure { reply(result, it) } }
+                "switchCamera" -> worker.execute {
+                    runCatching { switchCamera() }
                         .onSuccess { reply(result, null) }.onFailure { reply(result, it) } }
                 "receiveSignaling" -> worker.execute {
                     runCatching {
@@ -110,6 +161,11 @@ class CallMediaPlugin(
         runCatching { stop() }
         methods.setMethodCallHandler(null)
         events.setStreamHandler(null)
+        main.post {
+            runCatching { egl?.release() }
+            egl = null
+            renderers.clear()
+        }
         worker.shutdownNow()
     }
 
@@ -122,15 +178,36 @@ class CallMediaPlugin(
 
     private fun emit(event: Map<String, Any?>) = main.post { eventSink?.success(event) }
 
+    // MARK: - PlatformView renderer registry (called from VideoView.kt)
+
+    /** The shared GL context renderers init against. Lazily created (main thread). */
+    @Synchronized
+    fun eglContext(): EglBase.Context {
+        val existing = egl ?: EglBase.create().also { egl = it }
+        return existing.eglBaseContext
+    }
+
+    fun registerRenderer(role: String, renderer: TextureViewRenderer) {
+        android.util.Log.i("CallMediaVid", "registerRenderer role=$role")
+        renderers[role] = renderer
+    }
+
+    fun unregisterRenderer(role: String, renderer: TextureViewRenderer) {
+        renderers.remove(role, renderer)
+    }
+
     // MARK: - ntgcalls lifecycle
 
     @Suppress("UNCHECKED_CAST")
     private fun start(config: Map<String, Any?>) {
         stop() // tear down any previous call
+        sawRemoteFrame = false
+        useFrontCamera = true
 
         chatId = (config["callId"] as Number).toLong()
         val isOutgoing = config["isOutgoing"] as Boolean
         val isVideo = config["isVideo"] as Boolean
+        android.util.Log.i("CallMediaVid", "start isVideo=$isVideo isOutgoing=$isOutgoing")
         val p2pAllowed = config["p2pAllowed"] as? Boolean ?: true
         val key = config["encryptionKey"] as ByteArray
         val versions = (config["libraryVersions"] as? List<String>) ?: emptyList()
@@ -148,19 +225,40 @@ class CallMediaPlugin(
             emit(mapOf("type" to "state", "state" to info.state.name))
         }
 
-        // Sequence per the Telegram-X reference: create → CAPTURE (mic) →
-        // PLAYBACK (speaker) → skipExchange → connectP2P.
+        // Sequence per the Telegram-X reference: create → CAPTURE (mic[/camera]) →
+        // PLAYBACK (speaker[/external camera]) → frame callback → skipExchange →
+        // connectP2P.
         instance.createP2PCall(chatId)
         instance.setStreamSources(chatId, StreamMode.CAPTURE, captureMedia(isVideo))
-        instance.setStreamSources(chatId, StreamMode.PLAYBACK, playbackMedia())
+        instance.setStreamSources(chatId, StreamMode.PLAYBACK, playbackMedia(isVideo))
+        // Decoded remote camera frames arrive here (PLAYBACK + CAMERA) → render into
+        // the full-screen remote view. Our own outgoing frames don't come back through
+        // here — they're captured + previewed locally by CameraCapture.
+        instance.setFrameCallback { _, mode, device, frames ->
+            if (mode != StreamMode.PLAYBACK || device != StreamDevice.CAMERA) {
+                return@setFrameCallback
+            }
+            if (!sawRemoteFrame) {
+                sawRemoteFrame = true
+                android.util.Log.i(
+                    "CallMediaVid",
+                    "first remote CAMERA frames=${frames.size} renderer=${renderers["remote"] != null}",
+                )
+            }
+            val renderer = renderers["remote"] ?: return@setFrameCallback
+            for (f in frames) renderFrame(renderer, f)
+        }
         // TDLib already did the DH exchange and handed us the 256-byte shared key.
         instance.skipExchange(chatId, key, isOutgoing)
         instance.connectP2P(chatId, servers.mapNotNull(::toRtcServer), versions, p2pAllowed)
 
         beginAudioSession()
+        if (isVideo) startCameraCapture(useFrontCamera)
     }
 
     private fun stop() {
+        runCatching { camera?.stop() }
+        camera = null
         val instance = ntg ?: return
         runCatching { instance.stop(chatId) }
         ntg = null
@@ -174,25 +272,93 @@ class CallMediaPlugin(
 
     private fun setVideoEnabled(enabled: Boolean) {
         ntg?.setStreamSources(chatId, StreamMode.CAPTURE, captureMedia(enabled))
+        if (enabled) startCameraCapture(useFrontCamera) else camera?.stop()
     }
 
-    /** CAPTURE media (what we send): the microphone. On Android ntgcalls' device
-     *  metadata is a synthetic JSON string — the default mic is exactly
-     *  {"is_microphone":true} (an empty/invalid string throws "Invalid device
-     *  metadata"). getMediaDevices() isn't needed (it only returns this constant)
-     *  AND avoiding it sidesteps the camera-enumeration SIGABRT (ntgcalls never
-     *  sets the WebRTC app Context). Camera capture is a follow-up once that
-     *  Context init is in place. */
+    /** Flip between the front- and back-facing camera (CameraVideoCapturer handles
+     *  the reopen); un-mirror the local preview for the back camera. */
+    private fun switchCamera() {
+        camera?.switch()
+    }
+
+    /** Bring up our own camera capture, feeding ntgcalls an EXTERNAL stream and the
+     *  local self-preview PiP. */
+    private fun startCameraCapture(front: Boolean) {
+        ensureWebRtcContext(context)
+        val cam = camera ?: CameraCapture(
+            context = context,
+            eglContext = eglContext(),
+            onLocalFrame = { frame -> renderers["local"]?.onFrame(frame) },
+            onEncodedFrame = { bytes, w, h, rot, tsMs ->
+                runCatching {
+                    ntg?.sendExternalFrame(
+                        chatId,
+                        StreamDevice.CAMERA,
+                        bytes,
+                        FrameData(tsMs, w, h, rot),
+                    )
+                }
+            },
+            onSwitched = { isFront ->
+                useFrontCamera = isFront
+                main.post { renderers["local"]?.setMirror(isFront) }
+            },
+        ).also { camera = it }
+        cam.start(front)
+    }
+
+    /** CAPTURE media (what we send): the microphone, plus — for a video call — an
+     *  EXTERNAL camera stream that we feed from CameraCapture via sendExternalFrame
+     *  (so we can also render a local self-preview). On Android ntgcalls' audio
+     *  device metadata is the synthetic string {"is_microphone":true} (empty/invalid
+     *  throws "Invalid device metadata"). */
     private fun captureMedia(video: Boolean): MediaDescription {
         val mic = AudioDescription(MediaSource.DEVICE, MIC_META, true, 48000, 2)
-        return MediaDescription(mic, null, null, null)
+        // We send 1280x720 frames with rotation=90/270 (portrait phone, front
+        // camera). ntgcalls applies the rotation before the encoder, producing a
+        // 720x1280 frame, so the encoder MUST be configured at the post-rotation
+        // size — declaring 1280x720 here makes the encoder abort (SIGABRT on its
+        // VideoEncoderQue thread) on the dimension mismatch.
+        val camera = if (video) {
+            VideoDescription(MediaSource.EXTERNAL, "", false, 720, 1280, 30)
+        } else {
+            null
+        }
+        return MediaDescription(mic, null, camera, null)
     }
 
-    /** PLAYBACK media (what we hear): the default speaker, {"is_microphone":false}
-     *  so is_microphone matches the (non-capture) direction. */
-    private fun playbackMedia(): MediaDescription {
+    /** PLAYBACK media (what we receive): the default speaker, plus — for a video
+     *  call — an EXTERNAL camera so ntgcalls delivers decoded remote frames to the
+     *  FrameCallback (it only fires for EXTERNAL-sourced streams). width/height 0
+     *  → ntgcalls uses the frame's native size. */
+    private fun playbackMedia(video: Boolean): MediaDescription {
         val speaker = AudioDescription(MediaSource.DEVICE, SPK_META, true, 48000, 2)
-        return MediaDescription(null, speaker, null, null)
+        val camera = if (video) VideoDescription(MediaSource.EXTERNAL, "", false, 0, 0, 0) else null
+        return MediaDescription(null, speaker, camera, null)
+    }
+
+    /** Wrap a tightly-packed-I420 ntgcalls Frame as a WebRTC VideoFrame and push it
+     *  into the renderer. The renderer retains the frame if it needs it past
+     *  onFrame; release() drops our reference. */
+    private fun renderFrame(renderer: TextureViewRenderer, f: Frame) {
+        val fd = f.frameData ?: return
+        val data = f.data
+        val w = fd.width
+        val h = fd.height
+        if (w <= 0 || h <= 0) return
+        val ySize = w * h
+        val cSize = ySize / 4
+        if (data.size < ySize + 2 * cSize) return
+        val buf = ByteBuffer.allocateDirect(data.size)
+        buf.put(data)
+        buf.rewind()
+        val y = buf.duplicate().apply { position(0); limit(ySize) }.slice()
+        val u = buf.duplicate().apply { position(ySize); limit(ySize + cSize) }.slice()
+        val v = buf.duplicate().apply { position(ySize + cSize); limit(ySize + 2 * cSize) }.slice()
+        val i420 = JavaI420Buffer.wrap(w, h, y, w, u, w / 2, v, w / 2, null)
+        val frame = VideoFrame(i420, fd.rotation, fd.absoluteCaptureTimestampMs * 1_000_000L)
+        renderer.onFrame(frame)
+        frame.release()
     }
 
     // MARK: - Server mapping (TDLib callServer → ntgcalls RTCServer)

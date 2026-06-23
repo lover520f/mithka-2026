@@ -16,6 +16,7 @@ class StickerItem {
     required this.height,
     required this.emoji,
     this.isAnimated = false,
+    this.isVideo = false,
     this.thumb,
     this.customEmojiId = 0,
   });
@@ -25,6 +26,7 @@ class StickerItem {
   final int height;
   final String emoji; // associated standard emoji (custom-emoji fallback)
   final bool isAnimated; // .tgs (Lottie)
+  final bool isVideo; // .webm (VP9 video sticker, played via fvp)
   final TdFileRef? thumb; // for display in the picker
   final int customEmojiId; // custom_emoji_id (premium emoji), or 0 if regular
 }

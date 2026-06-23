@@ -124,7 +124,16 @@ Future<void> _external(String url) async {
   if (!u.contains('://') && !u.startsWith('tg:')) u = 'https://$u';
   final uri = Uri.tryParse(u);
   if (uri == null) return;
-  if (await canLaunchUrl(uri)) {
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  // Open in the external browser. We deliberately do NOT gate on canLaunchUrl():
+  // on Android 11+ it returns false when no browser package is visible to the
+  // query filter, silently swallowing perfectly valid non-Telegram links. Try
+  // the external app first, then fall back to the platform default.
+  for (final mode in const [
+    LaunchMode.externalApplication,
+    LaunchMode.platformDefault,
+  ]) {
+    try {
+      if (await launchUrl(uri, mode: mode)) return;
+    } catch (_) {}
   }
 }

@@ -1,14 +1,15 @@
 //
 //  main.dart
 //
-//  MithkalApp entry point. Wires the controllers (AuthManager, ThemeController,
+//  MithkaApp entry point. Wires the controllers (AuthManager, ThemeController,
 //  AccountStore, DrawerController) as providers, applies the adaptive theme +
 //  themeMode, and keys the content on the active account so the whole tree
-//  rebuilds for the newly active account. Port of the Swift `MithkalApp`.
+//  rebuilds for the newly active account. Port of the Swift `MithkaApp`.
 //
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:fvp/fvp.dart' as fvp;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -21,24 +22,27 @@ import 'theme/theme_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Route video_player through the MDK/FFmpeg backend so .webm (VP9 + alpha)
+  // video stickers decode + play (and stay transparent).
+  fvp.registerWith();
   // Portrait only — no landscape.
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
   final prefs = await SharedPreferences.getInstance();
-  runApp(MithkalApp(prefs: prefs));
+  runApp(MithkaApp(prefs: prefs));
 }
 
-class MithkalApp extends StatefulWidget {
-  const MithkalApp({super.key, required this.prefs});
+class MithkaApp extends StatefulWidget {
+  const MithkaApp({super.key, required this.prefs});
   final SharedPreferences prefs;
 
   @override
-  State<MithkalApp> createState() => _MithkalAppState();
+  State<MithkaApp> createState() => _MithkaAppState();
 }
 
-class _MithkalAppState extends State<MithkalApp> {
+class _MithkaAppState extends State<MithkaApp> {
   late final AuthManager _auth = AuthManager();
   late final ThemeController _theme = ThemeController(widget.prefs);
   late final AccountStore _accounts = AccountStore(widget.prefs);
@@ -80,11 +84,21 @@ class _MithkalAppState extends State<MithkalApp> {
       child: Consumer2<ThemeController, AccountStore>(
         builder: (context, theme, accounts, _) {
           return MaterialApp(
-            title: 'Mithkal',
+            title: 'Mithka',
             debugShowCheckedModeBanner: false,
             theme: _themeData(Brightness.light),
             darkTheme: _themeData(Brightness.dark),
             themeMode: theme.themeMode,
+            // Apply the user's chosen font size app-wide (设置 › 通用 › 字体大小).
+            builder: (context, child) {
+              final mq = MediaQuery.of(context);
+              return MediaQuery(
+                data: mq.copyWith(
+                  textScaler: TextScaler.linear(theme.fontScale),
+                ),
+                child: child ?? const SizedBox.shrink(),
+              );
+            },
             // Rebuild the whole tree when the active account changes.
             home: KeyedSubtree(
               key: ValueKey(accounts.activeSlot),

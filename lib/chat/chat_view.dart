@@ -28,6 +28,7 @@ import 'chat_view_model.dart';
 import 'full_image_viewer.dart';
 import 'message_action_menu.dart';
 import 'message_bubble.dart';
+import 'sticker_set_detail_view.dart';
 
 class ChatView extends StatefulWidget {
   const ChatView({super.key, required this.chatId, required this.title});
@@ -63,6 +64,9 @@ class _ChatViewState extends State<ChatView> {
     _vm.addListener(_onModel);
     _scroll.addListener(_onScroll);
     _vm.onAppear();
+    // Load premium status early so the message menu can correctly hide the
+    // emoji add/表情包 actions for non-premium users (the menu reads it).
+    EmojiStore.shared.loadIfNeeded();
   }
 
   void _onScroll() {
@@ -221,6 +225,15 @@ class _ChatViewState extends State<ChatView> {
         if (id != null) {
           _vm.saveFavoriteSticker(id);
           showToast(context, '已添加到表情');
+        }
+      case MessageAction.viewStickerSet:
+        final sid = message.stickerSetId;
+        if (sid != null) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => StickerSetDetailView(setId: sid),
+            ),
+          );
         }
       case MessageAction.delete:
         _vm.deleteMessage(message.id);
@@ -579,6 +592,7 @@ class _ChatViewState extends State<ChatView> {
                   onOpenImage: _openImage,
                   isRead: _vm.isRead(message),
                   onToggleReaction: (r) => _vm.toggleReaction(message, r),
+                  onRedial: _startCall,
                 ),
             ],
           );

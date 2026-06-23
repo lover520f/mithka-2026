@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mithkal/tdlib/td_models.dart';
+import 'package:mithka/tdlib/td_models.dart';
 
 void main() {
   test('formatPhone uses libphonenumber per-country grouping', () {

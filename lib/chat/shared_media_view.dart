@@ -15,7 +15,7 @@ import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
 import '../theme/app_theme.dart';
 import '../theme/date_text.dart';
-import 'file_opener.dart';
+import 'file_detail_view.dart';
 import 'full_image_viewer.dart';
 import 'link_handler.dart';
 
@@ -265,7 +265,9 @@ class _SharedMediaViewState extends State<SharedMediaView> {
       behavior: HitTestBehavior.opaque,
       onTap: () {
         if (m.document != null) {
-          openDocument(context, m.document!);
+          Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => FileDetailView(doc: m.document!)),
+          );
         } else if (isLink && m.text.isNotEmpty) {
           openLink(context, m.text);
         }

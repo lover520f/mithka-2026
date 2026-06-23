@@ -44,8 +44,13 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# App secrets (TDLib api_id/api_hash) — copy secrets_example.dart to set up
+# App secrets (TDLib api_id/api_hash) — copy secrets_example.dart to set up,
+# or generate from .env via scripts/gen-secrets.sh
 lib/config/secrets.dart
+
+# Raw local secrets consumed by scripts/gen-secrets.sh: Telegram api_id/api_hash
+# + base64 signing keystore & passwords. Never commit.
+.env
 
 # Native TDLib binaries (large, platform-specific — built via scripts/, see NATIVE.md)
 android/app/src/main/jniLibs/

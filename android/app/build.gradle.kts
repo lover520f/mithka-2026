@@ -17,7 +17,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "ad.neko.mithkal"
+    namespace = "ad.neko.mithka"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -27,7 +27,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "ad.neko.mithkal"
+        applicationId = "ad.neko.mithka"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // TDLib (tdjson) needs API 21+. jniLibs/<abi>/libtdjson.so is bundled
@@ -58,6 +58,14 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // ntgcalls (and other native plugins) resolve their Java classes by name
+            // from native code via JNI (GetStaticMethodID); R8 obfuscation renames
+            // those classes → JniAbort/SIGABRT at runtime in release (debug doesn't
+            // minify, so it ran fine). The Java/Kotlin surface here is tiny — the APK
+            // is almost entirely native .so + Dart AOT, which R8 can't shrink — so
+            // disabling minification costs ~nothing and avoids release-only JNI crashes.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

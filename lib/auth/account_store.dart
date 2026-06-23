@@ -29,10 +29,20 @@ class AccountSummary {
 
 class AccountStore extends ChangeNotifier {
   AccountStore(SharedPreferences prefs)
-    : _activeSlot = prefs.getInt('drachma.activeSlot') ?? 0;
+    : _activeSlot = prefs.getInt('drachma.activeSlot') ?? 0 {
+    // Refresh the switcher when one of our own accounts changes (e.g. after a
+    // name edit) — TDLib emits updateUser for us. Filtered to known self-ids so
+    // it doesn't fire for every contact seen in chats.
+    TdClient.shared.subscribe().listen((u) {
+      if (u.type != 'updateUser') return;
+      final uid = u.obj('user')?.int64('id');
+      if (uid != null && _selfIds.contains(uid)) refresh();
+    });
+  }
 
   int _activeSlot;
   List<AccountSummary> _summaries = [];
+  final Set<int> _selfIds = {}; // our own user ids across accounts
 
   int get activeSlot => _activeSlot;
   List<AccountSummary> get summaries => _summaries;
@@ -48,6 +58,8 @@ class AccountStore extends ChangeNotifier {
       try {
         me = await TdClient.shared.queryTo({'@type': 'getMe'}, cid);
       } catch (_) {}
+      final selfId = me?.int64('id');
+      if (selfId != null) _selfIds.add(selfId);
       final parsedName = me != null ? TDParse.userName(me) : '';
       final name = parsedName.isEmpty
           ? (slot == _activeSlot ? '未登录账号' : '未登录')

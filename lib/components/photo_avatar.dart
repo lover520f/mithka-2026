@@ -31,13 +31,16 @@ class AvatarClip extends StatelessWidget {
   Widget build(BuildContext context) {
     if (square) {
       return ClipRRect(
+        // antiAliasWithSaveLayer composites the clip offscreen so the rounded
+        // edge is smooth instead of stair-stepped on some GPUs/Impeller.
+        clipBehavior: Clip.antiAliasWithSaveLayer,
         borderRadius: BorderRadius.circular(
           size * AppTheme.groupAvatarCornerRatio,
         ),
         child: child,
       );
     }
-    return ClipOval(child: child);
+    return ClipOval(clipBehavior: Clip.antiAliasWithSaveLayer, child: child);
   }
 }
 
@@ -145,6 +148,9 @@ class _PhotoAvatarState extends State<PhotoAvatar> {
       return Image.file(
         _file!,
         fit: BoxFit.cover,
+        // medium = trilinear/mipmapped sampling, so a large source photo shrunk
+        // to a small avatar isn't aliased/shimmery (low is the default).
+        filterQuality: FilterQuality.medium,
         errorBuilder: (_, _, _) => _placeholder(),
       );
     }
@@ -152,6 +158,7 @@ class _PhotoAvatarState extends State<PhotoAvatar> {
       return Image.memory(
         ref!.miniThumb!,
         fit: BoxFit.cover,
+        filterQuality: FilterQuality.medium,
         errorBuilder: (_, _, _) => _placeholder(),
       );
     }

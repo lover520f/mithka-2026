@@ -2,20 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Mithkal needs the microphone to record voice messages.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Mithkal needs photo access to send images.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Mithkal needs the camera to take photos.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Mithkal needs your location to share where you are.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Mithkal</string>
+	<string>Mithka</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -23,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Mithkal</string>
+	<string>Mithka</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -34,6 +26,14 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Mithka needs the camera to take photos.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Mithka needs your location to share where you are.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Mithka needs the microphone to record voice messages.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Mithka needs photo access to send images.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

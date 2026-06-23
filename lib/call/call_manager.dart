@@ -14,6 +14,7 @@ import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
@@ -70,6 +71,7 @@ class CallManager extends ChangeNotifier {
   bool isMuted = false;
   bool isSpeaker = false;
   bool isVideoEnabled = false;
+  bool useFrontCamera = true; // last-selected lens (front by default)
 
   // Protocol advertised in createCall/acceptCall. Defaults are overwritten at
   // start() with the media engine's own supported protocol (so TDLib negotiates
@@ -157,26 +159,42 @@ class CallManager extends ChangeNotifier {
     );
     notifyListeners();
     _resolvePeer(userId);
-    _client
-        .query({
-          '@type': 'createCall',
-          'user_id': userId,
-          'protocol': _callProtocol,
-          'is_video': isVideo,
-        })
-        .catchError((_) => <String, dynamic>{});
+    _ensureCallPermissions(isVideo).whenComplete(() {
+      _client
+          .query({
+            '@type': 'createCall',
+            'user_id': userId,
+            'protocol': _callProtocol,
+            'is_video': isVideo,
+          })
+          .catchError((_) => <String, dynamic>{});
+    });
   }
 
   void accept() {
     final callId = call?.callId;
     if (callId == null) return;
-    _client
-        .query({
-          '@type': 'acceptCall',
-          'call_id': callId,
-          'protocol': _callProtocol,
-        })
-        .catchError((_) => <String, dynamic>{});
+    _ensureCallPermissions(call?.isVideo ?? false).whenComplete(() {
+      _client
+          .query({
+            '@type': 'acceptCall',
+            'call_id': callId,
+            'protocol': _callProtocol,
+          })
+          .catchError((_) => <String, dynamic>{});
+    });
+  }
+
+  /// Ensures mic (and camera, for video) permission before placing/answering a
+  /// call — ntgcalls opens the devices itself, so the runtime grant must precede
+  /// createCall/acceptCall. Best-effort: proceeds even if denied (audio-only).
+  Future<void> _ensureCallPermissions(bool video) async {
+    try {
+      await <Permission>[
+        Permission.microphone,
+        if (video) Permission.camera,
+      ].request();
+    } catch (_) {}
   }
 
   void end() {
@@ -219,10 +237,27 @@ class CallManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleVideo() {
-    isVideoEnabled = !isVideoEnabled;
-    call?.isVideo = isVideoEnabled;
-    _engine.setVideoEnabled(isVideoEnabled);
+  /// Turn the outgoing camera on with the chosen lens. The UI shows a 前置/后置
+  /// selector before calling this. Doesn't touch `call.isVideo` (that marks "this
+  /// is a video call" and keeps the video UI + 摄像头 toggle on screen).
+  void enableVideo(bool front) {
+    isVideoEnabled = true;
+    useFrontCamera = front;
+    _engine.setVideoEnabled(true, front: front);
+    notifyListeners();
+  }
+
+  /// Turn the outgoing camera off. The call stays up and video can be re-enabled.
+  void disableVideo() {
+    isVideoEnabled = false;
+    _engine.setVideoEnabled(false);
+    notifyListeners();
+  }
+
+  /// Flip the front/back camera during a video call.
+  void switchCamera() {
+    useFrontCamera = !useFrontCamera;
+    _engine.switchCamera();
     notifyListeners();
   }
 

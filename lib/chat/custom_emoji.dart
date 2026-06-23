@@ -19,6 +19,7 @@ import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
 import 'animated_sticker_view.dart';
 import 'sticker_item.dart';
+import 'video_sticker_view.dart';
 
 /// Parses a TDLib `stickers` array into pickable items (regular or custom
 /// emoji). Captures `custom_emoji_id` + animated flag + display thumbnail.
@@ -40,6 +41,7 @@ List<StickerItem> parseStickers(List<Map<String, dynamic>>? array) {
         height: sticker.integer('height') ?? 512,
         emoji: sticker.str('emoji') ?? '',
         isAnimated: sticker.obj('format')?.type == 'stickerFormatTgs',
+        isVideo: sticker.obj('format')?.type == 'stickerFormatWebm',
         thumb: thumb,
         customEmojiId: sticker.obj('full_type')?.int64('custom_emoji_id') ?? 0,
       ),
@@ -163,8 +165,11 @@ class _CustomEmojiViewState extends State<CustomEmojiView> {
     Widget child;
     if (s.isTgs && s.file != null) {
       child = AnimatedStickerView(file: s.file!);
+    } else if (s.isWebm && s.file != null) {
+      // VP9 + alpha custom emoji → play via fvp (video_player) like a sticker.
+      child = VideoStickerView(file: s.file!);
     } else {
-      final img = s.isWebm ? (s.thumb ?? s.file) : (s.file ?? s.thumb);
+      final img = s.file ?? s.thumb;
       if (img == null) return SizedBox(width: widget.size, height: widget.size);
       child = TDImage(photo: img, cornerRadius: 0, fit: BoxFit.contain);
     }

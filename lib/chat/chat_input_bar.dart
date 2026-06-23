@@ -32,6 +32,7 @@ import 'emoji_text_controller.dart';
 import 'checklist_composer_view.dart';
 import 'location_picker_view.dart';
 import 'poll_composer_view.dart';
+import 'sticker_preview.dart';
 import 'sticker_store.dart';
 
 enum _Panel { none, function, emoji, sticker, voice }
@@ -85,6 +86,10 @@ class _ChatInputBarState extends State<ChatInputBar> {
   DateTime? _lastTyping;
   void _onTextChanged() {
     vm.setDraft(_controller.text);
+    // setDraft doesn't notify (it would rebuild the whole chat per keystroke), so
+    // rebuild just the composer here — otherwise `hasText` stays stale and the
+    // send button never appears while typing.
+    if (mounted) setState(() {});
     final now = DateTime.now();
     if (_controller.text.isNotEmpty &&
         (_lastTyping == null || now.difference(_lastTyping!).inSeconds >= 4)) {
@@ -857,36 +862,27 @@ class _ChatInputBarState extends State<ChatInputBar> {
         ),
       );
     }
-    return GridView.count(
-      crossAxisCount: 4,
+    final stickers = pack.stickers;
+    // Lazy builder so only on-screen stickers spin up an animation/decoder.
+    return GridView.builder(
       padding: const EdgeInsets.all(12),
-      mainAxisSpacing: 8,
-      crossAxisSpacing: 8,
-      children: [
-        for (final item in pack.stickers)
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              widget.vm.sendSticker(item);
-              setState(() => _panel = _Panel.none);
-            },
-            child: item.isAnimated && item.thumb == null
-                ? Center(
-                    child: Text(
-                      item.emoji.isEmpty ? '🎴' : item.emoji,
-                      style: const TextStyle(fontSize: 30),
-                    ),
-                  )
-                : (item.thumb != null
-                      ? TDImage(photo: item.thumb, cornerRadius: 6)
-                      : Center(
-                          child: Text(
-                            item.emoji.isEmpty ? '🎴' : item.emoji,
-                            style: const TextStyle(fontSize: 30),
-                          ),
-                        )),
-          ),
-      ],
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 4,
+        mainAxisSpacing: 8,
+        crossAxisSpacing: 8,
+      ),
+      itemCount: stickers.length,
+      itemBuilder: (context, i) {
+        final item = stickers[i];
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            widget.vm.sendSticker(item);
+            setState(() => _panel = _Panel.none);
+          },
+          child: StickerPreview(item: item),
+        );
+      },
     );
   }
 
@@ -921,7 +917,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
                             : c.textSecondary,
                       )
                     : (pack.cover != null
-                          ? TDImage(photo: pack.cover, cornerRadius: 4)
+                          ? StickerPreview(item: pack.cover!, cornerRadius: 4)
                           : Text(
                               pack.title.isEmpty
                                   ? ''

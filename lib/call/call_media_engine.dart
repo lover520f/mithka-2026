@@ -48,7 +48,14 @@ abstract class CallMediaEngine {
   void stop();
   void setMuted(bool muted);
   void setSpeaker(bool speaker);
-  void setVideoEnabled(bool enabled);
+
+  /// Enable/disable our outgoing camera. When enabling, [front] selects the
+  /// front- or back-facing lens.
+  void setVideoEnabled(bool enabled, {bool front = true});
+
+  /// Flip between the front- and back-facing camera during a video call. No-op
+  /// for engines without camera control.
+  void switchCamera() {}
 
   /// Inbound TDLib `updateNewCallSignalingData` bytes → fed to the engine so the
   /// WebRTC handshake can complete. No-op for engines that don't signal.
@@ -87,8 +94,11 @@ class NoopCallMediaEngine implements CallMediaEngine {
   void setSpeaker(bool speaker) => debugPrint('📞 [media] setSpeaker $speaker');
 
   @override
-  void setVideoEnabled(bool enabled) =>
-      debugPrint('📞 [media] setVideoEnabled $enabled');
+  void setVideoEnabled(bool enabled, {bool front = true}) =>
+      debugPrint('📞 [media] setVideoEnabled $enabled front=$front');
+
+  @override
+  void switchCamera() => debugPrint('📞 [media] switchCamera');
 
   @override
   void receiveSignaling(Uint8List data) {}

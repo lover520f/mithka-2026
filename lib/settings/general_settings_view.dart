@@ -30,7 +30,6 @@ class _GeneralSettingsViewState extends State<GeneralSettingsView> {
   bool _loadingCache = true;
   bool _clearing = false;
   bool _enterToSend = false;
-  bool _largeText = false;
   SharedPreferences? _prefs;
 
   static const _appearanceColor = Color(0xFF6A5BE2);
@@ -48,7 +47,6 @@ class _GeneralSettingsViewState extends State<GeneralSettingsView> {
     if (!mounted) return;
     setState(() {
       _enterToSend = _prefs!.getBool('enterToSend') ?? false;
-      _largeText = _prefs!.getBool('largeText') ?? false;
     });
   }
 
@@ -107,6 +105,8 @@ class _GeneralSettingsViewState extends State<GeneralSettingsView> {
               padding: const EdgeInsets.fromLTRB(12, 14, 12, 24),
               children: [
                 _appearanceCard(),
+                const SizedBox(height: 14),
+                _fontSizeCard(),
                 const SizedBox(height: 14),
                 _tabBarCard(),
                 const SizedBox(height: 14),
@@ -206,6 +206,73 @@ class _GeneralSettingsViewState extends State<GeneralSettingsView> {
             if (i < AppearanceMode.values.length - 1)
               const InsetDivider(leadingInset: 56),
           ],
+        ]),
+      ],
+    );
+  }
+
+  Widget _fontSizeCard() {
+    final c = context.colors;
+    final theme = context.watch<ThemeController>();
+    final steps = ThemeController.fontScaleSteps;
+    const labels = ['小', '标准', '大', '超大'];
+    // Closest step to the saved scale.
+    var idx = 0;
+    var best = double.infinity;
+    for (var i = 0; i < steps.length; i++) {
+      final d = (steps[i] - theme.fontScale).abs();
+      if (d < best) {
+        best = d;
+        idx = i;
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader('字体大小'),
+        _card([
+          SizedBox(
+            height: 52,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  _iconBadge('doc', const Color(0xFFF5A623)),
+                  const SizedBox(width: 12),
+                  Text(
+                    '聊天字体',
+                    style: TextStyle(fontSize: 16, color: c.textPrimary),
+                  ),
+                  const Spacer(),
+                  Text(
+                    labels[idx],
+                    style: TextStyle(fontSize: 15, color: c.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const InsetDivider(leadingInset: 56),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Row(
+              children: [
+                Text('A', style: TextStyle(fontSize: 14, color: c.textSecondary)),
+                Expanded(
+                  child: CupertinoSlider(
+                    value: idx.toDouble(),
+                    min: 0,
+                    max: (steps.length - 1).toDouble(),
+                    divisions: steps.length - 1,
+                    activeColor: AppTheme.brand,
+                    onChanged: (v) => context.read<ThemeController>().fontScale =
+                        steps[v.round()],
+                  ),
+                ),
+                Text('A', style: TextStyle(fontSize: 24, color: c.textPrimary)),
+              ],
+            ),
+          ),
         ]),
       ],
     );
@@ -319,11 +386,6 @@ class _GeneralSettingsViewState extends State<GeneralSettingsView> {
               _prefs?.setBool('enterToSend', v);
             },
           ),
-          const InsetDivider(leadingInset: 56),
-          _toggleRow('doc', const Color(0xFFF5A623), '大字体', _largeText, (v) {
-            setState(() => _largeText = v);
-            _prefs?.setBool('largeText', v);
-          }),
         ]),
       ],
     );

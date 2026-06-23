@@ -45,7 +45,7 @@ class AboutView extends StatelessWidget {
                       ),
                       const SizedBox(height: 14),
                       Text(
-                        'Mithkal',
+                        'Mithka',
                         style: TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.bold,

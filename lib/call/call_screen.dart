@@ -10,9 +10,12 @@
 //
 
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../components/photo_avatar.dart'; // PhotoAvatar + TDImage
 import '../components/sf_symbols.dart';
@@ -56,6 +59,11 @@ class _CallScreenState extends State<CallScreen> {
           _backdrop(call, isVideoActive),
           // Local camera preview (PiP) during a video call.
           if (isVideoActive) _localPreview(),
+          // Flip front/back camera while the camera is on.
+          if (isVideoActive &&
+              widget.manager.isVideoEnabled &&
+              Platform.isAndroid)
+            Positioned(top: 54, left: 16, child: _flipCameraButton()),
           SafeArea(
             child: Column(
               children: [
@@ -107,6 +115,14 @@ class _CallScreenState extends State<CallScreen> {
               ),
             ),
           ),
+        // Remote camera feed (Android/ntgcalls) — fills the screen over the
+        // blurred-avatar fallback once decoded frames arrive (black until then).
+        if (isVideoActive && Platform.isAndroid)
+          const AndroidView(
+            viewType: 'mithka/video_view',
+            creationParams: {'role': 'remote'},
+            creationParamsCodec: StandardMessageCodec(),
+          ),
         // Darkening scrim so white text/controls stay legible.
         DecoratedBox(
           decoration: BoxDecoration(
@@ -125,22 +141,91 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Widget _localPreview() {
+    // Show our own camera feed when it's on; otherwise a placeholder glyph.
+    final showVideo = Platform.isAndroid && widget.manager.isVideoEnabled;
     return Positioned(
       top: 56,
       right: 16,
       child: Container(
         width: 96,
         height: 132,
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.4),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
         ),
+        child: showVideo
+            ? const AndroidView(
+                viewType: 'mithka/video_view',
+                creationParams: {'role': 'local'},
+                creationParamsCodec: StandardMessageCodec(),
+              )
+            : Center(
+                child: Icon(
+                  sfIcon('video.fill'),
+                  color: Colors.white.withValues(alpha: 0.5),
+                  size: 26,
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _flipCameraButton() {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.manager.switchCamera,
+      child: Container(
+        width: 40,
+        height: 40,
         alignment: Alignment.center,
-        child: Icon(
-          sfIcon('video.fill'),
-          color: Colors.white.withValues(alpha: 0.5),
-          size: 26,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.35),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+        ),
+        child: Icon(sfIcon('camera.rotate'), size: 22, color: Colors.white),
+      ),
+    );
+  }
+
+  /// 摄像头 toggle: turning the camera ON first asks which lens to use;
+  /// turning it OFF is immediate.
+  void _onCameraToggle() {
+    final m = widget.manager;
+    if (m.isVideoEnabled) {
+      m.disableVideo();
+    } else {
+      _showCameraSelector();
+    }
+  }
+
+  void _showCameraSelector() {
+    showCupertinoModalPopup<void>(
+      context: context,
+      builder: (sheet) => CupertinoActionSheet(
+        title: const Text('选择摄像头'),
+        actions: [
+          CupertinoActionSheetAction(
+            onPressed: () {
+              Navigator.of(sheet).pop();
+              widget.manager.enableVideo(true);
+            },
+            child: const Text('前置摄像头'),
+          ),
+          CupertinoActionSheetAction(
+            onPressed: () {
+              Navigator.of(sheet).pop();
+              widget.manager.enableVideo(false);
+            },
+            child: const Text('后置摄像头'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          isDefaultAction: true,
+          onPressed: () => Navigator.of(sheet).pop(),
+          child: const Text('取消'),
         ),
       ),
     );
@@ -276,7 +361,7 @@ class _CallScreenState extends State<CallScreen> {
                 icon: 'video.fill',
                 label: '摄像头',
                 isOn: m.isVideoEnabled,
-                onTap: m.toggleVideo,
+                onTap: _onCameraToggle,
               ),
               const SizedBox(width: 26),
             ],

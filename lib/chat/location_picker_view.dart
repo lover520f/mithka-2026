@@ -73,7 +73,7 @@ class _LocationPickerViewState extends State<LocationPickerView> {
       });
       final client = HttpClient();
       final req = await client.getUrl(uri);
-      req.headers.set(HttpHeaders.userAgentHeader, 'Mithkal/1.0');
+      req.headers.set(HttpHeaders.userAgentHeader, 'Mithka/1.0');
       final res = await req.close();
       final body = await res.transform(utf8.decoder).join();
       client.close();
@@ -154,7 +154,7 @@ class _LocationPickerViewState extends State<LocationPickerView> {
       children: [
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'ad.neko.mithkal',
+          userAgentPackageName: 'ad.neko.mithka',
         ),
       ],
     );

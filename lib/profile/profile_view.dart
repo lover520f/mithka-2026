@@ -7,6 +7,7 @@
 //  (设置 · 夜间模式). Backed by real TDLib via ProfileViewModel + AccountStore.
 //
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -17,6 +18,7 @@ import '../auth/account_store.dart';
 import '../auth/auth_manager.dart';
 import '../chat/chat_view.dart';
 import '../chat/custom_emoji.dart';
+import '../chat/emoji_store.dart';
 import '../components/drawer_controller.dart' as dc;
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
@@ -37,35 +39,53 @@ class ProfileViewModel extends ChangeNotifier {
   CurrentUser? user;
   int? savedChatId;
   bool _loaded = false;
+  StreamSubscription? _sub;
 
   void onAppear() {
     if (_loaded) return;
     _loaded = true;
+    // Keep the profile (and the "我" drawer, which is this same view) live: when
+    // our own user changes — e.g. after editing the name — TDLib emits updateUser
+    // for us, so re-parse instead of waiting for an app restart.
+    _sub = TdClient.shared.subscribe().listen((u) {
+      if (u.type != 'updateUser') return;
+      final usr = u.obj('user');
+      if (usr != null && usr.int64('id') == user?.id) _applyUser(usr);
+    });
     _getMe();
+  }
+
+  void _applyUser(Map<String, dynamic> me) {
+    user = CurrentUser(
+      id: me.int64('id') ?? user?.id ?? 0,
+      name: TDParse.userName(me),
+      phoneNumber: TDParse.formatPhone(me.str('phone_number')),
+      username: me.obj('usernames')?.str('editable_username'),
+      photo: TDParse.smallPhoto(me.obj('profile_photo')),
+      emojiStatusId: me.obj('emoji_status')?.int64('custom_emoji_id') ?? 0,
+      isPremium: me.boolean('is_premium') ?? false,
+    );
+    notifyListeners();
   }
 
   Future<void> _getMe() async {
     try {
       final me = await TdClient.shared.query({'@type': 'getMe'});
-      final id = me.int64('id') ?? 0;
-      user = CurrentUser(
-        id: id,
-        name: TDParse.userName(me),
-        phoneNumber: TDParse.formatPhone(me.str('phone_number')),
-        username: me.obj('usernames')?.str('editable_username'),
-        photo: TDParse.smallPhoto(me.obj('profile_photo')),
-        emojiStatusId: me.obj('emoji_status')?.int64('custom_emoji_id') ?? 0,
-        isPremium: me.boolean('is_premium') ?? false,
-      );
-      notifyListeners();
+      _applyUser(me);
       final chat = await TdClient.shared.query({
         '@type': 'createPrivateChat',
-        'user_id': id,
+        'user_id': user?.id ?? me.int64('id') ?? 0,
         'force': false,
       });
-      savedChatId = chat.int64('id') ?? id;
+      savedChatId = chat.int64('id') ?? user?.id;
       notifyListeners();
     } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
   /// Default emoji-status suggestions (custom_emoji_ids), resolved on demand
@@ -158,113 +178,162 @@ class _ProfileViewState extends State<ProfileView> {
     );
   }
 
-  /// QQ's status picker, mapped to Telegram's emoji status: a grid of suggested
-  /// custom-emoji statuses (+ a clear option) → setEmojiStatus.
+  /// QQ's status picker, mapped to Telegram's emoji status: suggested
+  /// custom-emoji statuses plus — for Premium users — every installed custom-emoji
+  /// pack, so any custom emoji can be set as the status. (+ a clear option) →
+  /// setEmojiStatus.
   void _openStatusPicker() {
+    EmojiStore.shared.loadIfNeeded(); // populate the Premium custom-emoji packs
     final optionsFuture = _vm.statusOptions();
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: context.colors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (sheetContext) {
         final c = sheetContext.colors;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      '设置状态',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: c.textPrimary,
-                      ),
-                    ),
-                    const Spacer(),
-                    if ((_vm.user?.emojiStatusId ?? 0) != 0)
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () async {
-                          await _vm.setEmojiStatus(0);
-                          if (sheetContext.mounted) {
-                            Navigator.of(sheetContext).pop();
-                          }
-                        },
-                        child: Text(
-                          '清除',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: AppTheme.tagRed,
-                          ),
-                        ),
-                      ),
-                  ],
+        final maxHeight = MediaQuery.of(sheetContext).size.height * 0.6;
+
+        Future<void> pick(int id) async {
+          final ok = await _vm.setEmojiStatus(id);
+          if (!sheetContext.mounted) return;
+          Navigator.of(sheetContext).pop();
+          if (!ok && mounted) showToast(context, '设置状态失败（需要 Premium）');
+        }
+
+        Widget grid(List<int> ids) => GridView.count(
+          crossAxisCount: 6,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          children: [
+            for (final id in ids)
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => pick(id),
+                child: Padding(
+                  padding: const EdgeInsets.all(5),
+                  child: CustomEmojiView(id: id, size: 34, color: c.textPrimary),
                 ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  height: 200,
-                  child: FutureBuilder<List<int>>(
-                    future: optionsFuture,
-                    builder: (context, snap) {
-                      final ids = snap.data ?? const [];
-                      if (snap.connectionState != ConnectionState.done) {
-                        return const Center(
-                          child: SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator.adaptive(
-                              strokeWidth: 2,
-                            ),
-                          ),
-                        );
-                      }
-                      if (ids.isEmpty) {
-                        return Center(
-                          child: Text(
-                            '暂无可用状态（需要 Premium）',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: c.textSecondary,
-                            ),
-                          ),
-                        );
-                      }
-                      return GridView.count(
-                        crossAxisCount: 6,
+              ),
+          ],
+        );
+
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: ListenableBuilder(
+                listenable: EmojiStore.shared,
+                builder: (ctx, _) {
+                  final packs = EmojiStore.shared.isPremium
+                      ? EmojiStore.shared.customPacks
+                      : const <CustomEmojiPack>[];
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         children: [
-                          for (final id in ids)
+                          Text(
+                            '设置状态',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: c.textPrimary,
+                            ),
+                          ),
+                          const Spacer(),
+                          if ((_vm.user?.emojiStatusId ?? 0) != 0)
                             GestureDetector(
                               behavior: HitTestBehavior.opaque,
-                              onTap: () async {
-                                final ok = await _vm.setEmojiStatus(id);
-                                if (!sheetContext.mounted) return;
-                                Navigator.of(sheetContext).pop();
-                                if (!ok && mounted) {
-                                  showToast(context, '设置状态失败（需要 Premium）');
-                                }
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.all(5),
-                                child: CustomEmojiView(
-                                  id: id,
-                                  size: 34,
-                                  color: c.textPrimary,
+                              onTap: () => pick(0),
+                              child: Text(
+                                '清除',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: AppTheme.tagRed,
                                 ),
                               ),
                             ),
                         ],
-                      );
-                    },
-                  ),
-                ),
-              ],
+                      ),
+                      const SizedBox(height: 12),
+                      Flexible(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              FutureBuilder<List<int>>(
+                                future: optionsFuture,
+                                builder: (context, snap) {
+                                  final ids = snap.data ?? const <int>[];
+                                  final loading =
+                                      snap.connectionState !=
+                                      ConnectionState.done;
+                                  if (loading && packs.isEmpty) {
+                                    return const Padding(
+                                      padding: EdgeInsets.all(24),
+                                      child: Center(
+                                        child: SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child:
+                                              CircularProgressIndicator.adaptive(
+                                                strokeWidth: 2,
+                                              ),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                  if (ids.isEmpty && packs.isEmpty) {
+                                    return Padding(
+                                      padding: const EdgeInsets.all(24),
+                                      child: Center(
+                                        child: Text(
+                                          '暂无可用状态（需要 Premium）',
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            color: c.textSecondary,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                  return ids.isEmpty
+                                      ? const SizedBox.shrink()
+                                      : grid(ids);
+                                },
+                              ),
+                              for (final pack in packs) ...[
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    top: 10,
+                                    bottom: 4,
+                                  ),
+                                  child: Text(
+                                    pack.title,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: c.textSecondary,
+                                    ),
+                                  ),
+                                ),
+                                grid([
+                                  for (final e in pack.emoji)
+                                    if (e.customEmojiId != 0) e.customEmojiId,
+                                ]),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
             ),
           ),
         );
@@ -284,8 +353,6 @@ class _ProfileViewState extends State<ProfileView> {
             child: ListView(
               padding: const EdgeInsets.only(top: 12, bottom: 8),
               children: [
-                _editCard(),
-                const SizedBox(height: 12),
                 _rowsCard(),
                 const SizedBox(height: 12),
                 _accountsCard(),
@@ -395,6 +462,18 @@ class _ProfileViewState extends State<ProfileView> {
                     ],
                   ),
                 ),
+                const SizedBox(width: 8),
+                // Edit profile — replaces the old duplicate 编辑资料 card.
+                GestureDetector(
+                  onTap: () => _root.push(
+                    MaterialPageRoute(builder: (_) => const EditProfileView()),
+                  ),
+                  child: Icon(
+                    sfIcon('square.and.pencil'),
+                    size: 22,
+                    color: Colors.white,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -453,49 +532,6 @@ class _ProfileViewState extends State<ProfileView> {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  // MARK: - Edit-profile card
-
-  Widget _editCard() {
-    final c = context.colors;
-    final user = _vm.user;
-    return _card(
-      onTap: () => _root.push(
-        MaterialPageRoute(builder: (_) => const EditProfileView()),
-      ),
-      child: Row(
-        children: [
-          PhotoAvatar(title: user?.name ?? '我', photo: user?.photo, size: 40),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  user?.name ?? '我',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: c.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '编辑资料，展示我的独特态度',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 13, color: c.textSecondary),
-                ),
-              ],
-            ),
-          ),
-          Icon(sfIcon('chevron.right'), size: 16, color: c.textTertiary),
-        ],
       ),
     );
   }
@@ -773,21 +809,6 @@ class _ProfileViewState extends State<ProfileView> {
     );
   }
 
-  Widget _card({required Widget child, VoidCallback? onTap}) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 12),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: context.colors.card,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: child,
-      ),
-    );
-  }
 }
 
 /// QQ-style VIP indicator shown next to a Telegram Premium user's name: the QQ

@@ -1,4 +1,4 @@
-# Mithkal
+# Mithka
 
 A cross-platform (iOS + Android) Telegram client built with **Flutter** on top of
 **[TDLib](https://core.telegram.org/tdlib)** via FFI, with a UI **inspired by the
@@ -6,7 +6,7 @@ look and feel of QQ / WeChat-style messengers**.
 
 > **Disclaimer**
 >
-> Mithkal is an **independent, unofficial** project. It is **not affiliated with,
+> Mithka is an **independent, unofficial** project. It is **not affiliated with,
 > endorsed by, or connected to Tencent, QQ, WeChat, or Telegram** in any way. The
 > interface is merely *inspired by* the visual style of QQ-style messengers — no
 > QQ/WeChat/Tencent code, assets, trademarks, or branding are used. "QQ",
@@ -17,9 +17,19 @@ look and feel of QQ / WeChat-style messengers**.
 > [Terms of Service](https://telegram.org/tos) and API
 > [Terms](https://core.telegram.org/api/terms).
 
+## The name
+
+A play on small units of mass, by way of the penguin:
+
+- The penguin mascot is a **pengram** — 🐧 + *gram*, read as **penta-gram** ≈ **5 g**.
+- One **mithqāl** (مثقال), a traditional Islamic unit of mass, is **≈ 4.6875 g**.
+
+So **Mithka** (from *mithqāl*) is the featherweight just under the (Tele)gram
+penguin on the scale.
+
 ## What it is
 
-Mithkal connects to **real Telegram** (your account, your chats) through TDLib and
+Mithka connects to **real Telegram** (your account, your chats) through TDLib and
 presents it with a QQ-inspired interface: chat list, conversations with live
 state, reactions and stickers (including animated `.tgs`/`.webm`), voice notes,
 polls and checklists, location sharing, contacts, profiles, moments-style
