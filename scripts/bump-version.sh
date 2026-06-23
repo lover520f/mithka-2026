@@ -49,11 +49,13 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   git commit -m "Bump version to $new"
   git tag "v$new_semver"
   echo "Committed + tagged v$new_semver."
+  # Push the branch + ONLY the new tag — never --tags, which would also push
+  # stale local tags and trigger spurious release builds.
   if $push; then
-    git push origin HEAD --tags
+    git push origin HEAD "v$new_semver"
     echo "Pushed — the release workflow will build v$new_semver."
   else
     echo "Push to trigger the release build:"
-    echo "  git push origin HEAD --tags"
+    echo "  git push origin HEAD v$new_semver"
   fi
 fi
