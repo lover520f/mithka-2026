@@ -8,19 +8,24 @@
 //  either end dismisses. Port of the Swift `StoryViewerView`.
 //
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
 import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
+import '../tdlib/td_image_loader.dart';
 import '../tdlib/td_models.dart';
 
 class _StoryMedia {
-  _StoryMedia(this.imageFile, this.caption, this.isVideo);
-  final TdFileRef? imageFile;
+  _StoryMedia(this.imageFile, this.caption, this.isVideo, this.videoFile);
+  final TdFileRef? imageFile; // photo, or a video's thumbnail
   final String caption;
   final bool isVideo;
+  final TdFileRef? videoFile; // playable video file (video stories)
 }
 
 class StoryViewerView extends StatefulWidget {
@@ -41,6 +46,17 @@ class _StoryViewerViewState extends State<StoryViewerView> {
   String _senderName = '动态';
   TdFileRef? _senderPhoto;
   _StoryMedia? _current;
+  bool _loadError =
+      false; // getStory failed/timed out → show a message, not a spinner
+  VideoPlayerController?
+  _videoController; // inline video playback (video stories)
+  bool _videoStarting = false;
+
+  @override
+  void dispose() {
+    _videoController?.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -67,25 +83,35 @@ class _StoryViewerViewState extends State<StoryViewerView> {
   Future<void> _load(int index) async {
     if (index < 0 || index >= widget.storyIds.length) return;
     final sid = widget.storyIds[index];
-    setState(() => _current = null);
+    // Tear down any inline video from the previous story.
+    _videoController?.dispose();
+    _videoController = null;
+    _videoStarting = false;
+    setState(() {
+      _current = null;
+      _loadError = false;
+    });
 
     // Mark the story as viewed (best-effort).
     TdClient.shared.send({
       '@type': 'openStory',
-      'story_sender_chat_id': widget.chatId,
+      'story_poster_chat_id': widget.chatId,
       'story_id': sid,
     });
 
     try {
-      final story = await TdClient.shared.query({
-        '@type': 'getStory',
-        'story_sender_chat_id': widget.chatId,
-        'story_id': sid,
-        'only_local': false,
-      });
+      final story = await TdClient.shared
+          .query({
+            '@type': 'getStory',
+            'story_poster_chat_id': widget.chatId,
+            'story_id': sid,
+            'only_local': false,
+          })
+          .timeout(const Duration(seconds: 20));
       final content = story.obj('content');
       final caption = story.obj('caption')?.str('text') ?? '';
       TdFileRef? imageFile;
+      TdFileRef? videoFile;
       var isVideo = false;
       switch (content?.type) {
         case 'storyContentPhoto':
@@ -105,12 +131,66 @@ class _StoryViewerViewState extends State<StoryViewerView> {
           );
         case 'storyContentVideo':
           final video = content?.obj('video');
-          imageFile = TDParse.fileRef(video?.obj('thumbnail')?.obj('file'));
+          imageFile = TDParse.fileRef(
+            video?.obj('thumbnail')?.obj('file'),
+            miniThumb: TDParse.decodeMiniThumb(video?.obj('minithumbnail')),
+          );
+          videoFile = TDParse.fileRef(video?.obj('video'));
           isVideo = true;
       }
       if (!mounted || _index != index) return;
-      setState(() => _current = _StoryMedia(imageFile, caption, isVideo));
-    } catch (_) {}
+      setState(
+        () => _current = _StoryMedia(imageFile, caption, isVideo, videoFile),
+      );
+    } catch (_) {
+      if (mounted && _index == index) setState(() => _loadError = true);
+    }
+  }
+
+  /// Tapping a video story plays it inline (downloading on demand) and toggles
+  /// play/pause thereafter; tapping a photo does nothing (navigation is
+  /// swipe-only).
+  Future<void> _onTapMedia() async {
+    final m = _current;
+    if (m == null || !m.isVideo || m.videoFile == null) return;
+
+    final existing = _videoController;
+    if (existing != null && existing.value.isInitialized) {
+      setState(() {
+        existing.value.isPlaying ? existing.pause() : existing.play();
+      });
+      return;
+    }
+    if (_videoStarting) return;
+    _videoStarting = true;
+
+    final path = await TdFileCenter.shared.path(m.videoFile!.id);
+    if (!mounted || _current != m || path == null) {
+      _videoStarting = false;
+      return;
+    }
+    final c = VideoPlayerController.file(File(path));
+    try {
+      await c.initialize();
+      await c.setLooping(true);
+      await c.play();
+    } catch (_) {
+      await c.dispose();
+      _videoStarting = false;
+      return;
+    }
+    if (!mounted || _current != m) {
+      await c.dispose();
+      _videoStarting = false;
+      return;
+    }
+    c.addListener(() {
+      if (mounted) setState(() {});
+    });
+    setState(() {
+      _videoController = c;
+      _videoStarting = false;
+    });
   }
 
   void _goPrevious() {
@@ -140,6 +220,30 @@ class _StoryViewerViewState extends State<StoryViewerView> {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
+          // Full-bleed media fills the screen behind the chrome.
+          Positioned.fill(child: _media()),
+          // Top scrim so the white progress bars + name stay legible over
+          // bright media.
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: top + 140,
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.45),
+                      Colors.transparent,
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
           Column(
             children: [
               SizedBox(height: top + 12),
@@ -207,8 +311,6 @@ class _StoryViewerViewState extends State<StoryViewerView> {
                 ),
               ),
               const Spacer(),
-              _media(),
-              const Spacer(),
               if (_current != null && _current!.caption.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(
@@ -226,26 +328,21 @@ class _StoryViewerViewState extends State<StoryViewerView> {
               SizedBox(height: MediaQuery.of(context).padding.bottom),
             ],
           ),
-          // Tap zones: left third = prev, right two-thirds = next.
+          // Swipe left/right to move between stories; tap a video to play it.
           Positioned.fill(
             top: top + 96,
-            child: Row(
-              children: [
-                Expanded(
-                  flex: 1,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: _goPrevious,
-                  ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: _goNext,
-                  ),
-                ),
-              ],
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: _onTapMedia,
+              onHorizontalDragEnd: (d) {
+                final v = d.primaryVelocity ?? 0;
+                if (v < -150) {
+                  _goNext();
+                } else if (v > 150) {
+                  _goPrevious();
+                }
+              },
+              child: const SizedBox.expand(),
             ),
           ),
         ],
@@ -254,19 +351,52 @@ class _StoryViewerViewState extends State<StoryViewerView> {
   }
 
   Widget _media() {
+    if (_loadError) {
+      return const Center(
+        child: Text(
+          '动态加载失败',
+          style: TextStyle(fontSize: 15, color: Colors.white70),
+        ),
+      );
+    }
     final story = _current;
-    if (story?.imageFile == null) {
+    if (story == null) {
       return const Center(
         child: CircularProgressIndicator(
           valueColor: AlwaysStoppedAnimation(Colors.white),
         ),
       );
     }
+    if (story.imageFile == null) {
+      // Loaded, but a content type we don't render (live / unsupported).
+      return const Center(
+        child: Text(
+          '暂不支持的动态',
+          style: TextStyle(fontSize: 15, color: Colors.white70),
+        ),
+      );
+    }
+    final vc = _videoController;
+    final videoReady = vc != null && vc.value.isInitialized;
+    final showPlayButton = story.isVideo && (vc == null || !vc.value.isPlaying);
     return Stack(
+      fit: StackFit.expand,
       alignment: Alignment.center,
       children: [
-        TDImage(photo: story!.imageFile, cornerRadius: 0, fit: BoxFit.contain),
-        if (story.isVideo)
+        // Fill the whole screen (cover), like a real story.
+        if (videoReady)
+          FittedBox(
+            fit: BoxFit.cover,
+            clipBehavior: Clip.hardEdge,
+            child: SizedBox(
+              width: vc.value.size.width,
+              height: vc.value.size.height,
+              child: VideoPlayer(vc),
+            ),
+          )
+        else
+          TDImage(photo: story.imageFile, cornerRadius: 0, fit: BoxFit.cover),
+        if (showPlayButton)
           Container(
             width: 70,
             height: 70,

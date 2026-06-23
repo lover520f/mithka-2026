@@ -201,15 +201,37 @@ class MomentsViewModel extends ChangeNotifier {
     TdClient.shared.subscribe().listen((update) {
       if (update.type == 'updateChatActiveStories') _handle(update);
     });
-    TdClient.shared
-        .query({
-          '@type': 'loadActiveStories',
-          'story_list': {'@type': 'storyListMain'},
-        })
-        .whenComplete(() {
-          loading = false;
-          notifyListeners();
-        });
+    _loadAll();
+  }
+
+  /// TDLib paginates active stories: each loadActiveStories pulls the next batch
+  /// of friends with active stories (surfaced via updateChatActiveStories) and
+  /// returns a 404 once the list is exhausted. A single call only ever shows the
+  /// first few friends, so loop until done (capped) to surface everyone.
+  Future<void> _loadAll() async {
+    for (var i = 0; i < 15; i++) {
+      var more = true;
+      try {
+        await TdClient.shared
+            .query({
+              '@type': 'loadActiveStories',
+              'story_list': {'@type': 'storyListMain'},
+            })
+            .timeout(const Duration(seconds: 10));
+      } catch (_) {
+        // 404 (all loaded), a timeout, or any error → stop paging. Crucially we
+        // must still drop the spinner below so the tab can't hang on a black
+        // loading screen forever.
+        more = false;
+      }
+      // First page settled (or failed) → clear the spinner and show whatever
+      // arrived; later pages keep filling in via updateChatActiveStories.
+      if (loading) {
+        loading = false;
+        notifyListeners();
+      }
+      if (!more) break;
+    }
   }
 
   Future<void> _handle(Map<String, dynamic> update) async {

@@ -10,6 +10,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../components/toast.dart';
 import 'package:provider/provider.dart';
@@ -63,7 +64,10 @@ class ProfileViewModel extends ChangeNotifier {
       phoneNumber: TDParse.formatPhone(me.str('phone_number')),
       username: me.obj('usernames')?.str('editable_username'),
       photo: TDParse.smallPhoto(me.obj('profile_photo')),
-      emojiStatusId: me.obj('emoji_status')?.int64('custom_emoji_id') ?? 0,
+      emojiStatusId:
+          me.obj('emoji_status')?.obj('type')?.int64('custom_emoji_id') ??
+          me.obj('emoji_status')?.int64('custom_emoji_id') ??
+          0,
       isPremium: me.boolean('is_premium') ?? false,
     );
     notifyListeners();
@@ -123,11 +127,17 @@ class ProfileViewModel extends ChangeNotifier {
     try {
       await TdClient.shared.query({
         '@type': 'setEmojiStatus',
+        // Current TDLib: emojiStatus.type = emojiStatusTypeCustomEmoji{...}.
+        // (Sending custom_emoji_id at the top level is silently ignored, so the
+        // status never actually changes.)
         'emoji_status': id == 0
             ? null
             : {
                 '@type': 'emojiStatus',
-                'custom_emoji_id': id,
+                'type': {
+                  '@type': 'emojiStatusTypeCustomEmoji',
+                  'custom_emoji_id': id,
+                },
                 'expiration_date': 0,
               },
       });
@@ -186,13 +196,13 @@ class _ProfileViewState extends State<ProfileView> {
   void _openStatusPicker() {
     EmojiStore.shared.loadIfNeeded(); // populate the Premium custom-emoji packs
     final optionsFuture = _vm.statusOptions();
-    showModalBottomSheet<void>(
+    // A Cupertino modal popup on the root navigator — not Material's
+    // showModalBottomSheet — so its barrier reliably covers the whole screen
+    // (the drawer is itself an overlay; a non-root sheet let taps bleed through
+    // to the chat list behind it).
+    showCupertinoModalPopup<void>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: context.colors.card,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
+      useRootNavigator: true,
       builder: (sheetContext) {
         final c = sheetContext.colors;
         final maxHeight = MediaQuery.of(sheetContext).size.height * 0.6;
@@ -235,102 +245,119 @@ class _ProfileViewState extends State<ProfileView> {
         }
 
         var statusTab = 0; // 0 = 推荐 (suggested); 1..N = custom packs
-        return SafeArea(
-          child: SizedBox(
-            height: maxHeight,
-            child: ListenableBuilder(
-              listenable: EmojiStore.shared,
-              builder: (ctx, _) {
-                final packs = EmojiStore.shared.isPremium
-                    ? EmojiStore.shared.customPacks
-                    : const <CustomEmojiPack>[];
-                return StatefulBuilder(
-                  builder: (ctx2, setSheet) {
-                    if (statusTab > packs.length) statusTab = 0;
-                    return Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-                          child: Row(
-                            children: [
-                              Text(
-                                '设置状态',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  color: c.textPrimary,
-                                ),
-                              ),
-                              const Spacer(),
-                              if ((_vm.user?.emojiStatusId ?? 0) != 0)
-                                GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () => pick(0),
-                                  child: Text(
-                                    '清除',
+        return Align(
+          alignment: Alignment.bottomCenter,
+          child: Container(
+            decoration: BoxDecoration(
+              color: c.card,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(16),
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              child: SizedBox(
+                height: maxHeight,
+                child: ListenableBuilder(
+                  listenable: EmojiStore.shared,
+                  builder: (ctx, _) {
+                    final packs = EmojiStore.shared.isPremium
+                        ? EmojiStore.shared.customPacks
+                        : const <CustomEmojiPack>[];
+                    return StatefulBuilder(
+                      builder: (ctx2, setSheet) {
+                        if (statusTab > packs.length) statusTab = 0;
+                        return Column(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    '设置状态',
                                     style: TextStyle(
-                                      fontSize: 14,
-                                      color: AppTheme.tagRed,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: c.textPrimary,
                                     ),
                                   ),
+                                  const Spacer(),
+                                  if ((_vm.user?.emojiStatusId ?? 0) != 0)
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () => pick(0),
+                                      child: Text(
+                                        '清除',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          color: AppTheme.tagRed,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
                                 ),
-                            ],
-                          ),
-                        ),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            child: statusTab == 0
-                                ? FutureBuilder<List<int>>(
-                                    future: optionsFuture,
-                                    builder: (context, snap) {
-                                      if (snap.connectionState !=
-                                          ConnectionState.done) {
-                                        return const Center(
-                                          child: SizedBox(
-                                            width: 24,
-                                            height: 24,
-                                            child:
-                                                CircularProgressIndicator.adaptive(
-                                                  strokeWidth: 2,
+                                child: statusTab == 0
+                                    ? FutureBuilder<List<int>>(
+                                        future: optionsFuture,
+                                        builder: (context, snap) {
+                                          if (snap.connectionState !=
+                                              ConnectionState.done) {
+                                            return const Center(
+                                              child: SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child:
+                                                    CircularProgressIndicator.adaptive(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              ),
+                                            );
+                                          }
+                                          final ids =
+                                              snap.data ?? const <int>[];
+                                          if (ids.isEmpty && packs.isEmpty) {
+                                            return Center(
+                                              child: Text(
+                                                '暂无可用状态（需要 Premium）',
+                                                style: TextStyle(
+                                                  fontSize: 13,
+                                                  color: c.textSecondary,
                                                 ),
-                                          ),
-                                        );
-                                      }
-                                      final ids = snap.data ?? const <int>[];
-                                      if (ids.isEmpty && packs.isEmpty) {
-                                        return Center(
-                                          child: Text(
-                                            '暂无可用状态（需要 Premium）',
-                                            style: TextStyle(
-                                              fontSize: 13,
-                                              color: c.textSecondary,
-                                            ),
-                                          ),
-                                        );
-                                      }
-                                      return grid(ids);
-                                    },
-                                  )
-                                : grid([
-                                    for (final e in packs[statusTab - 1].emoji)
-                                      if (e.customEmojiId != 0) e.customEmojiId,
-                                  ]),
-                          ),
-                        ),
-                        // Tabs: 推荐 + one per installed custom-emoji pack.
-                        if (packs.isNotEmpty)
-                          _statusTabStrip(
-                            c,
-                            packs,
-                            statusTab,
-                            (i) => setSheet(() => statusTab = i),
-                          ),
-                      ],
+                                              ),
+                                            );
+                                          }
+                                          return grid(ids);
+                                        },
+                                      )
+                                    : grid([
+                                        for (final e
+                                            in packs[statusTab - 1].emoji)
+                                          if (e.customEmojiId != 0)
+                                            e.customEmojiId,
+                                      ]),
+                              ),
+                            ),
+                            // Tabs: 推荐 + one per installed custom-emoji pack.
+                            if (packs.isNotEmpty)
+                              _statusTabStrip(
+                                c,
+                                packs,
+                                statusTab,
+                                (i) => setSheet(() => statusTab = i),
+                              ),
+                          ],
+                        );
+                      },
                     );
                   },
-                );
-              },
+                ),
+              ),
             ),
           ),
         );
@@ -549,7 +576,7 @@ class _ProfileViewState extends State<ProfileView> {
                 final hasStatus = (user?.emojiStatusId ?? 0) != 0;
                 return GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: premium ? _openStatusPicker : null,
+                  onTap: _openStatusPicker,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,

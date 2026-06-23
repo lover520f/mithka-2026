@@ -8,6 +8,7 @@
 //  opens a dropdown of create actions. Port of the Swift `ChatListView`.
 //
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ import '../components/toast.dart';
 import 'package:provider/provider.dart';
 
 import '../chat/chat_view.dart';
+import '../chat/custom_emoji.dart';
 import '../components/drawer_controller.dart' as dc;
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
@@ -39,6 +41,9 @@ class _ChatListViewState extends State<ChatListView> {
   final ChatListViewModel _model = ChatListViewModel();
   String _meName = '我';
   TdFileRef? _mePhoto;
+  int _meStatusId = 0; // current emoji status, shown after the name
+  int? _meId;
+  StreamSubscription? _userSub;
   int? _openSwipeChat;
 
   @override
@@ -47,6 +52,12 @@ class _ChatListViewState extends State<ChatListView> {
     _model.onAppear();
     _model.addListener(_onModel);
     _loadMe();
+    // Keep the header's name/status/photo live — TDLib emits updateUser for us
+    // when the status or profile changes.
+    _userSub = TdClient.shared.subscribe().listen((u) {
+      if (u.type != 'updateUser') return;
+      if (u.obj('user')?.int64('id') == _meId) _loadMe();
+    });
   }
 
   void _onModel() {
@@ -60,6 +71,7 @@ class _ChatListViewState extends State<ChatListView> {
 
   @override
   void dispose() {
+    _userSub?.cancel();
     _model.removeListener(_onModel);
     _model.dispose();
     super.dispose();
@@ -73,6 +85,11 @@ class _ChatListViewState extends State<ChatListView> {
         setState(() {
           if (name.isNotEmpty) _meName = name;
           _mePhoto = TDParse.smallPhoto(me.obj('profile_photo'));
+          _meStatusId =
+              me.obj('emoji_status')?.obj('type')?.int64('custom_emoji_id') ??
+              me.obj('emoji_status')?.int64('custom_emoji_id') ??
+              0;
+          _meId = me.int64('id');
         });
       }
     } catch (_) {}
@@ -125,15 +142,30 @@ class _ChatListViewState extends State<ChatListView> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _meName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                    color: c.textPrimary,
-                  ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        _meName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                          color: c.textPrimary,
+                        ),
+                      ),
+                    ),
+                    if (_meStatusId != 0) ...[
+                      const SizedBox(width: 5),
+                      CustomEmojiView(
+                        id: _meStatusId,
+                        size: 18,
+                        color: c.textPrimary,
+                      ),
+                    ],
+                  ],
                 ),
                 const SizedBox(height: 2),
                 Row(

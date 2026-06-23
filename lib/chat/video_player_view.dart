@@ -136,10 +136,16 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
           fit: StackFit.expand,
           children: [
             if (ready)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: c.value.aspectRatio,
-                  child: VideoPlayer(c),
+              // Scale the video to fill the screen as much as possible while
+              // keeping its aspect ratio (no crop).
+              Positioned.fill(
+                child: FittedBox(
+                  fit: BoxFit.contain,
+                  child: SizedBox(
+                    width: c.value.size.width,
+                    height: c.value.size.height,
+                    child: VideoPlayer(c),
+                  ),
                 ),
               )
             else
