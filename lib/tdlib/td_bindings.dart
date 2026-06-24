@@ -6,7 +6,7 @@
 //  headers are required; the symbols are resolved from the platform library:
 //
 //   • Android  → libtdjson.so   (bundled in jniLibs, opened by name)
-//   • iOS      → linked into the app binary (resolved from the process)
+//   • iOS      → tdjson.framework (embedded in Runner.app/Frameworks)
 //
 //  The returned `char*` from td_receive / td_execute is owned by tdjson's
 //  thread-local storage and must NOT be freed; we copy it to a Dart string
@@ -59,8 +59,11 @@ class TdBindings {
       return DynamicLibrary.open('libtdjson.so');
     }
     if (Platform.isIOS || Platform.isMacOS) {
-      // tdjson is statically linked into the app binary on Apple platforms.
-      return DynamicLibrary.process();
+      try {
+        return DynamicLibrary.open('tdjson.framework/tdjson');
+      } on ArgumentError {
+        return DynamicLibrary.process();
+      }
     }
     if (Platform.isWindows) return DynamicLibrary.open('tdjson.dll');
     return DynamicLibrary.open('libtdjson.so');

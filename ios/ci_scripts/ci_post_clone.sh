@@ -62,6 +62,7 @@ if [ ! -d "ios/tdjson/tdjson.xcframework" ]; then
   unzip -q -o /tmp/tdjson.zip -d ios/tdjson
 fi
 ls -d ios/tdjson/tdjson.xcframework
+"$REPO/scripts/wrap-tdjson-xcframework.sh" ios/tdjson/tdjson.xcframework
 
 # --- Flutter iOS build inputs (Generated.xcconfig, plugin pods) --------------
 # Keep Swift Package Manager OFF: the project is CocoaPods-only on purpose (SPM

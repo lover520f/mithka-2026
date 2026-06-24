@@ -347,11 +347,11 @@
 			files = (
 			);
 			inputPaths = (
-				"${SRCROOT}/tdjson/tdjson.xcframework/ios-arm64/libtdjson.1.8.65.dylib",
+				"${SRCROOT}/tdjson/tdjson.xcframework/ios-arm64/tdjson.framework/tdjson",
 			);
 			name = "Package tdjson dSYM";
 			outputPaths = (
-				"${DWARF_DSYM_FOLDER_PATH}/libtdjson.1.8.65.dylib.dSYM",
+				"${DWARF_DSYM_FOLDER_PATH}/tdjson.framework.dSYM",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
