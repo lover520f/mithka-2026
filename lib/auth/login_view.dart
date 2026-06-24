@@ -557,8 +557,8 @@ class ObscuringController extends TextEditingController {
 }
 
 /// A pill-shaped reference text field with a leading glyph. Secure fields get a
-/// full (alphanumeric) keyboard and a show/hide eye toggle — Telegram 2-step
-/// passwords are NOT numeric.
+/// plain text keyboard and a show/hide eye toggle — Telegram 2-step passwords
+/// are NOT numeric.
 class InputField extends StatefulWidget {
   const InputField({
     super.key,
@@ -615,16 +615,21 @@ class _InputFieldState extends State<InputField> {
           const SizedBox(width: 12),
           Expanded(
             child: TextField(
+              key: ValueKey<Object?>((
+                widget.placeholder,
+                widget.secure,
+                widget.keyboardType,
+              )),
               controller: widget.controller,
               // Secure fields mask via an ObscuringController (render-time dots)
               // and keep obscureText FALSE — TextField.obscureText forces a
               // password input type that some Chinese/ColorOS IMEs render as a
-              // numeric PIN pad, even with visiblePassword. A plain text field +
-              // visiblePassword guarantees a real alphanumeric keyboard.
+              // numeric PIN pad. A plain text field avoids the PIN keyboard and
+              // still accepts Telegram's alphanumeric 2-step passwords.
               obscureText: maskCtrl == null && _obscure,
               keyboardType:
                   widget.keyboardType ??
-                  (widget.secure ? TextInputType.visiblePassword : null),
+                  (widget.secure ? TextInputType.text : null),
               inputFormatters: widget.inputFormatters,
               onChanged: widget.onChanged,
               autocorrect: false,
