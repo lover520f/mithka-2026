@@ -390,6 +390,14 @@ class _GeneralSettingsViewState extends State<GeneralSettingsView> {
               _prefs?.setBool('enterToSend', v);
             },
           ),
+          const InsetDivider(leadingInset: 56),
+          _toggleRow(
+            'person.2.circle.fill',
+            const Color(0xFF8E7BFF),
+            '群聊头像显示为圆形',
+            context.watch<ThemeController>().circularGroupAvatars,
+            (v) => context.read<ThemeController>().circularGroupAvatars = v,
+          ),
         ]),
       ],
     );

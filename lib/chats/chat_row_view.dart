@@ -7,12 +7,14 @@
 //
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
 import '../components/ui_components.dart';
 import '../theme/app_theme.dart';
 import '../theme/date_text.dart';
+import '../theme/theme_controller.dart';
 import '../tdlib/td_models.dart';
 
 class ChatRowView extends StatelessWidget {
@@ -28,7 +30,7 @@ class ChatRowView extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Row(
         children: [
-          _avatar(),
+          _avatar(context),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -62,7 +64,8 @@ class ChatRowView extends StatelessWidget {
     );
   }
 
-  Widget _avatar() {
+  Widget _avatar(BuildContext context) {
+    final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
     return SizedBox(
       width: 50,
       height: 50,
@@ -73,7 +76,7 @@ class ChatRowView extends StatelessWidget {
             title: chat.title,
             photo: chat.photo,
             size: 50,
-            square: chat.usesSquareAvatar,
+            square: chat.usesSquareAvatar && !circleGroups,
           ),
           if (chat.unreadCount > 0)
             Positioned(

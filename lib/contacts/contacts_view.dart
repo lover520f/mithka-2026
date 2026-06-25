@@ -21,6 +21,7 @@ import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
 import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
 
 class ContactsView extends StatefulWidget {
   const ContactsView({super.key});
@@ -247,6 +248,7 @@ class _ContactsViewState extends State<ContactsView> {
 
   Widget _groupsList() {
     final c = context.colors;
+    final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
     return _card([
       for (final group in _vm.groups) ...[
         GestureDetector(
@@ -266,7 +268,7 @@ class _ContactsViewState extends State<ContactsView> {
                     title: group.title,
                     photo: group.photo,
                     size: 44,
-                    square: true,
+                    square: !circleGroups,
                   ),
                   const SizedBox(width: 12),
                   Expanded(

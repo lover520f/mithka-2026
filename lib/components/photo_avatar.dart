@@ -2,8 +2,8 @@
 //  photo_avatar.dart
 //
 //  Avatar that shows a real TDLib profile photo when available (with an instant
-//  minithumbnail placeholder), falling back to a colored monogram. Circle for
-//  people, rounded-square for groups. Port of the Swift `PhotoAvatar`/`TDImage`.
+//  minithumbnail placeholder), falling back to a colored monogram. Callers choose
+//  circle vs rounded-square. Port of the Swift `PhotoAvatar`/`TDImage`.
 //
 
 import 'dart:io';
@@ -15,7 +15,7 @@ import '../tdlib/td_client.dart';
 import '../tdlib/td_image_loader.dart';
 import '../tdlib/td_models.dart';
 
-/// Clips its child to a circle (people) or a rounded square (groups/channels).
+/// Clips its child to a circle or rounded square.
 class AvatarClip extends StatelessWidget {
   const AvatarClip({
     super.key,

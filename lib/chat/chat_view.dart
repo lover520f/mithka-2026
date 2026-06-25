@@ -19,6 +19,7 @@ import '../components/sf_symbols.dart';
 import '../components/ui_components.dart';
 import '../profile/profile_detail_view.dart';
 import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
 import '../tdlib/td_models.dart';
 import 'chat_info_view.dart';
 import 'chat_input_bar.dart';
@@ -584,7 +585,9 @@ class _ChatViewState extends State<ChatView> {
                     title: _vm.peerTitle,
                     photo: _vm.peerPhoto,
                     size: 88,
-                    square: _vm.isGroup,
+                    square:
+                        _vm.isGroup &&
+                        !context.watch<ThemeController>().circularGroupAvatars,
                   ),
                   const SizedBox(height: 16),
                   Text(

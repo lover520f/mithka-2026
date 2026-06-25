@@ -7,12 +7,14 @@
 //
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../chats/chat_list_view_model.dart';
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
 import '../tdlib/td_models.dart';
 import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
 
 class ChatPickerView extends StatefulWidget {
   const ChatPickerView({super.key, this.title = '选择聊天'});
@@ -155,6 +157,7 @@ class _ChatPickerViewState extends State<ChatPickerView> {
 
   Widget _row(ChatSummary chat) {
     final c = context.colors;
+    final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => Navigator.of(context).pop(chat),
@@ -168,7 +171,7 @@ class _ChatPickerViewState extends State<ChatPickerView> {
               title: chat.title,
               photo: chat.photo,
               size: 44,
-              square: chat.usesSquareAvatar,
+              square: chat.usesSquareAvatar && !circleGroups,
             ),
             const SizedBox(width: 12),
             Expanded(

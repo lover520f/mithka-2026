@@ -8,6 +8,7 @@
 //
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../components/photo_avatar.dart';
@@ -16,6 +17,7 @@ import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
 import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
 
 class QRCodeView extends StatefulWidget {
   const QRCodeView({
@@ -192,6 +194,8 @@ class _QRCodeViewState extends State<QRCodeView> {
   }
 
   Widget _identityHeader() {
+    final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
+    final squareGroupAvatar = widget.isGroup && !circleGroups;
     return Container(
       height: 92,
       decoration: BoxDecoration(gradient: AppTheme.brandGradient),
@@ -200,8 +204,10 @@ class _QRCodeViewState extends State<QRCodeView> {
         children: [
           Container(
             decoration: BoxDecoration(
-              shape: widget.isGroup ? BoxShape.rectangle : BoxShape.circle,
-              borderRadius: widget.isGroup ? BorderRadius.circular(12) : null,
+              shape: squareGroupAvatar ? BoxShape.rectangle : BoxShape.circle,
+              borderRadius: squareGroupAvatar
+                  ? BorderRadius.circular(12)
+                  : null,
               border: Border.all(
                 color: Colors.white.withValues(alpha: 0.9),
                 width: 2,
@@ -211,7 +217,7 @@ class _QRCodeViewState extends State<QRCodeView> {
               title: _name,
               photo: _photo,
               size: 50,
-              square: widget.isGroup,
+              square: squareGroupAvatar,
             ),
           ),
           const SizedBox(width: 12),
@@ -252,6 +258,8 @@ class _QRCodeViewState extends State<QRCodeView> {
 
   Widget _qr() {
     final c = context.colors;
+    final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
+    final squareGroupAvatar = widget.isGroup && !circleGroups;
     if (_link == null) {
       return SizedBox(
         width: 224,
@@ -295,15 +303,17 @@ class _QRCodeViewState extends State<QRCodeView> {
           // Avatar inset (H correction keeps it scannable).
           Container(
             decoration: BoxDecoration(
-              shape: widget.isGroup ? BoxShape.rectangle : BoxShape.circle,
-              borderRadius: widget.isGroup ? BorderRadius.circular(10) : null,
+              shape: squareGroupAvatar ? BoxShape.rectangle : BoxShape.circle,
+              borderRadius: squareGroupAvatar
+                  ? BorderRadius.circular(10)
+                  : null,
               border: Border.all(color: Colors.white, width: 3),
             ),
             child: PhotoAvatar(
               title: _name,
               photo: _photo,
               size: 46,
-              square: widget.isGroup,
+              square: squareGroupAvatar,
             ),
           ),
         ],

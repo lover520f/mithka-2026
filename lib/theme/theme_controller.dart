@@ -1,10 +1,9 @@
 //
 //  theme_controller.dart
 //
-//  Drives the app-wide appearance (跟随系统 / 浅色 / 深色) and the bottom tab-bar
-//  style (经典 / 系统). The chosen mode is persisted in SharedPreferences and
-//  applied at the app root via MaterialApp.themeMode. All color tokens in
-//  AppColors are adaptive, so flipping the scheme re-resolves every surface.
+//  Drives the app-wide appearance (跟随系统 / 浅色 / 深色), bottom tab-bar style,
+//  text scale, and chat appearance preferences. Values are persisted in
+//  SharedPreferences and applied through providers at the app root.
 //
 
 import 'package:flutter/material.dart';
@@ -52,6 +51,7 @@ class ThemeController extends ChangeNotifier {
       _prefs.getInt(_brandKey) ?? (0xFF000000 | AppTheme.defaultBrand),
     );
     _fontScale = _prefs.getDouble(_fontKey) ?? 1.0;
+    _circularGroupAvatars = _prefs.getBool(_groupAvatarCircleKey) ?? true;
     AppTheme.applyBrand(_brandColor); // before the first MaterialApp build
   }
 
@@ -59,6 +59,7 @@ class ThemeController extends ChangeNotifier {
   static const _tabKey = 'tabBarStyle';
   static const _brandKey = 'brandColor';
   static const _fontKey = 'fontScale';
+  static const _groupAvatarCircleKey = 'circularGroupAvatars';
 
   /// Selectable text-scale steps for the 字体大小 control (小 / 标准 / 大 / 超大).
   /// Capped at 1.3 so fixed-height chrome doesn't overflow badly.
@@ -69,11 +70,13 @@ class ThemeController extends ChangeNotifier {
   late TabBarStyle _tabBarStyle;
   late Color _brandColor;
   late double _fontScale;
+  late bool _circularGroupAvatars;
 
   AppearanceMode get mode => _mode;
   TabBarStyle get tabBarStyle => _tabBarStyle;
   ThemeMode get themeMode => _mode.themeMode;
   Color get brandColor => _brandColor;
+  bool get circularGroupAvatars => _circularGroupAvatars;
 
   /// App-wide text scale factor, applied at the root via MediaQuery.textScaler.
   double get fontScale => _fontScale;
@@ -101,6 +104,12 @@ class ThemeController extends ChangeNotifier {
   set fontScale(double value) {
     _fontScale = value;
     _prefs.setDouble(_fontKey, value);
+    notifyListeners();
+  }
+
+  set circularGroupAvatars(bool value) {
+    _circularGroupAvatars = value;
+    _prefs.setBool(_groupAvatarCircleKey, value);
     notifyListeners();
   }
 }

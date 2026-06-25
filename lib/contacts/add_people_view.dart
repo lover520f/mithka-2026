@@ -10,6 +10,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../components/toast.dart';
 
 import '../chat/chat_view.dart';
@@ -22,6 +23,7 @@ import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
 import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
 import 'create_group_view.dart';
 
 class _ChatHit {
@@ -466,10 +468,16 @@ class _AddPeopleViewState extends State<AddPeopleView> {
   }
 
   Widget _groupRow(_ChatHit h) {
+    final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
     return _row(
       h.title,
       h.subtitle,
-      PhotoAvatar(title: h.title, photo: h.photo, size: 44, square: h.square),
+      PhotoAvatar(
+        title: h.title,
+        photo: h.photo,
+        size: 44,
+        square: h.square && !circleGroups,
+      ),
       () => _openChat(h),
     );
   }

@@ -167,7 +167,8 @@ class ChatSummary {
   bool isMarkedUnread; // "标为未读" with no unread count
   String draftText; // unsent draft; shown as "[草稿]" prefix when non-empty
 
-  /// Groups & channels use a rounded-square avatar; people use a circle.
+  /// Groups & channels use a rounded-square avatar unless UI preferences
+  /// override them; people use a circle.
   bool get usesSquareAvatar =>
       kind == ChatKind.group || kind == ChatKind.channel;
 }

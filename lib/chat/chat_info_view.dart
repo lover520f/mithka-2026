@@ -9,6 +9,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:provider/provider.dart';
 
 import '../components/icon_grid.dart';
 import '../components/photo_avatar.dart';
@@ -18,6 +19,7 @@ import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
 import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
 import '../profile/qr_code_view.dart';
 import 'add_members_view.dart';
 import 'chat_members_view.dart';
@@ -120,6 +122,7 @@ class _ChatInfoViewState extends State<ChatInfoView> {
   /// QR icon + chevron on the right (groups → tap opens the 群二维码 page).
   Widget _topCard() {
     final c = context.colors;
+    final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
     return Container(
       decoration: _card,
       child: GestureDetector(
@@ -133,7 +136,7 @@ class _ChatInfoViewState extends State<ChatInfoView> {
                 title: _vm.title,
                 photo: _vm.photo,
                 size: 56,
-                square: _vm.isGroup,
+                square: _vm.isGroup && !circleGroups,
               ),
               const SizedBox(width: 12),
               Expanded(
