@@ -66,6 +66,18 @@ class AppearanceView extends StatelessWidget {
                     (v) => theme.circularGroupAvatars = v,
                   ),
                 ]),
+                const SizedBox(height: 14),
+                _label(context, '消息红点'),
+                _card(context, [
+                  for (final m in UnreadBadgeMode.values)
+                    _choiceRow(
+                      context,
+                      m.icon,
+                      m.label,
+                      theme.unreadBadgeMode == m,
+                      () => theme.unreadBadgeMode = m,
+                    ),
+                ]),
               ],
             ),
           ),

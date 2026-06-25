@@ -37,6 +37,15 @@ enum TabBarStyle {
   final IconData icon;
 }
 
+enum UnreadBadgeMode {
+  messages('未读消息数', Icons.mark_chat_unread),
+  chats('未读会话数', Icons.forum);
+
+  const UnreadBadgeMode(this.label, this.icon);
+  final String label;
+  final IconData icon;
+}
+
 class ThemeController extends ChangeNotifier {
   ThemeController(this._prefs) {
     _mode = AppearanceMode.values.firstWhere(
@@ -52,6 +61,10 @@ class ThemeController extends ChangeNotifier {
     );
     _fontScale = _prefs.getDouble(_fontKey) ?? 1.0;
     _circularGroupAvatars = _prefs.getBool(_groupAvatarCircleKey) ?? true;
+    _unreadBadgeMode = UnreadBadgeMode.values.firstWhere(
+      (m) => m.name == _prefs.getString(_unreadBadgeModeKey),
+      orElse: () => UnreadBadgeMode.messages,
+    );
     AppTheme.applyBrand(_brandColor); // before the first MaterialApp build
   }
 
@@ -60,6 +73,7 @@ class ThemeController extends ChangeNotifier {
   static const _brandKey = 'brandColor';
   static const _fontKey = 'fontScale';
   static const _groupAvatarCircleKey = 'circularGroupAvatars';
+  static const _unreadBadgeModeKey = 'unreadBadgeMode';
 
   /// Selectable text-scale steps for the 字体大小 control (小 / 标准 / 大 / 超大).
   /// Capped at 1.3 so fixed-height chrome doesn't overflow badly.
@@ -71,12 +85,14 @@ class ThemeController extends ChangeNotifier {
   late Color _brandColor;
   late double _fontScale;
   late bool _circularGroupAvatars;
+  late UnreadBadgeMode _unreadBadgeMode;
 
   AppearanceMode get mode => _mode;
   TabBarStyle get tabBarStyle => _tabBarStyle;
   ThemeMode get themeMode => _mode.themeMode;
   Color get brandColor => _brandColor;
   bool get circularGroupAvatars => _circularGroupAvatars;
+  UnreadBadgeMode get unreadBadgeMode => _unreadBadgeMode;
 
   /// App-wide text scale factor, applied at the root via MediaQuery.textScaler.
   double get fontScale => _fontScale;
@@ -110,6 +126,12 @@ class ThemeController extends ChangeNotifier {
   set circularGroupAvatars(bool value) {
     _circularGroupAvatars = value;
     _prefs.setBool(_groupAvatarCircleKey, value);
+    notifyListeners();
+  }
+
+  set unreadBadgeMode(UnreadBadgeMode value) {
+    _unreadBadgeMode = value;
+    _prefs.setString(_unreadBadgeModeKey, value.name);
     notifyListeners();
   }
 }

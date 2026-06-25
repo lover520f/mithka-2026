@@ -24,20 +24,31 @@ import '../theme/app_theme.dart';
 import '../theme/theme_controller.dart';
 import '../update/update_checker.dart';
 
-/// Global unread badge source (unmuted chat count).
+/// Global unread badge source.
 class UnreadBadgeModel extends ChangeNotifier {
-  int _count = 0;
-  int get count => _count;
+  int _chatCount = 0;
+  int _messageCount = 0;
   bool _started = false;
+
+  int countFor(UnreadBadgeMode mode) => switch (mode) {
+    UnreadBadgeMode.messages => _messageCount,
+    UnreadBadgeMode.chats => _chatCount,
+  };
 
   void start() {
     if (_started) return;
     _started = true;
     TdClient.shared.subscribe().listen((update) {
-      if (update.type != 'updateUnreadChatCount') return;
-      if (update.obj('chat_list')?.type != 'chatListMain') return;
-      _count = update.integer('unread_unmuted_count') ?? 0;
-      notifyListeners();
+      switch (update.type) {
+        case 'updateUnreadChatCount':
+          if (update.obj('chat_list')?.type != 'chatListMain') return;
+          _chatCount = update.integer('unread_unmuted_count') ?? 0;
+          notifyListeners();
+        case 'updateUnreadMessageCount':
+          if (update.obj('chat_list')?.type != 'chatListMain') return;
+          _messageCount = update.integer('unread_unmuted_count') ?? 0;
+          notifyListeners();
+      }
     });
   }
 }
@@ -99,7 +110,9 @@ class _MainTabViewState extends State<MainTabView> {
   }
 
   void _select(int i) {
-    final shouldJumpUnread = i == 0 && _unread.count > 0;
+    final theme = context.read<ThemeController>();
+    final shouldJumpUnread =
+        i == 0 && _unread.countFor(theme.unreadBadgeMode) > 0;
     if (i == _selection) {
       // Tapping the active tab pops to its root.
       _navKeys[i].currentState?.popUntil((r) => r.isFirst);
@@ -171,6 +184,7 @@ class _MainTabViewState extends State<MainTabView> {
   // MARK: - Classic (flat) tab bar
 
   Widget _classicTabs() {
+    final theme = context.watch<ThemeController>();
     return Column(
       children: [
         Expanded(child: _stack()),
@@ -186,7 +200,9 @@ class _MainTabViewState extends State<MainTabView> {
                       selection: _selection,
                       onSelect: _select,
                       items: _tabs,
-                      unread: context.watch<UnreadBadgeModel>().count,
+                      unread: context.watch<UnreadBadgeModel>().countFor(
+                        theme.unreadBadgeMode,
+                      ),
                     ),
             );
           },
