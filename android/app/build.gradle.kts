@@ -39,6 +39,15 @@ android {
         versionName = flutter.versionName
     }
 
+    packaging {
+        jniLibs {
+            // The APK is distributed directly from CI. Store native libraries
+            // compressed so the arm64 APK is small enough for Telegram upload;
+            // Android will extract them at install time.
+            useLegacyPackaging = true
+        }
+    }
+
     signingConfigs {
         if (keystorePropertiesFile.exists()) {
             create("release") {
