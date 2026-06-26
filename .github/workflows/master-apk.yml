@@ -24,13 +24,9 @@ jobs:
       ABI: arm64-v8a
       TARGET_PLATFORM: android-arm64
       NDK_VERSION: 28.2.13676358
+      TDJSON_ANDROID_ARM64_URL: https://github.com/iebb/mithka-tdjson/releases/download/tdjson-1.8.65-android/tdjson-android-arm64-v8a.zip
     steps:
       - uses: actions/checkout@v5
-
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build gperf clang libssl-dev
 
       - uses: actions/setup-java@v4
         with:
@@ -49,22 +45,14 @@ jobs:
           yes | sdkmanager "ndk;$NDK_VERSION" >/dev/null 2>&1 || true
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
-      - name: Cache native build (.tdlib-build)
-        uses: actions/cache@v4
-        with:
-          path: .tdlib-build
-          key: tdnative-${{ runner.os }}-ndk28-${{ env.ABI }}-${{ hashFiles('scripts/build-tdjson-android.sh', 'scripts/build-openssl-android.sh') }}
-          restore-keys: |
-            tdnative-${{ runner.os }}-ndk28-${{ env.ABI }}-
-
       - name: Cache jniLibs (${{ env.ABI }})
         id: jnilibs-cache
         uses: actions/cache@v4
         with:
           path: android/app/src/main/jniLibs/${{ env.ABI }}
-          key: jnilibs-${{ runner.os }}-ndk28-${{ env.ABI }}-${{ hashFiles('scripts/build-tdjson-android.sh', 'scripts/build-openssl-android.sh') }}
+          key: jnilibs-${{ runner.os }}-tdjson-1.8.65-android-${{ env.ABI }}
           restore-keys: |
-            jnilibs-${{ runner.os }}-ndk28-${{ env.ABI }}-
+            jnilibs-${{ runner.os }}-tdjson-1.8.65-android-${{ env.ABI }}
 
       - name: Check cached tdjson
         id: tdjson
@@ -76,16 +64,15 @@ jobs:
             echo "cached=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build static OpenSSL (${{ env.ABI }})
+      - name: Download prebuilt tdjson (${{ env.ABI }})
         if: steps.tdjson.outputs.cached != 'true'
-        run: ./scripts/build-openssl-android.sh "$ABI"
-
-      - name: Build libtdjson.so (${{ env.ABI }})
-        if: steps.tdjson.outputs.cached != 'true'
-        env:
-          HOST_OPENSSL_ROOT_DIR: /usr
-          TD_ENABLE_LTO: 'OFF'
-        run: ./scripts/build-tdjson-android.sh "$ABI"
+        run: |
+          mkdir -p "android/app/src/main/jniLibs/$ABI"
+          curl -fsSL "$TDJSON_ANDROID_ARM64_URL" -o /tmp/tdjson-android.zip
+          unzip -q -o /tmp/tdjson-android.zip -d /tmp/tdjson-android
+          install -m 0644 "/tmp/tdjson-android/$ABI/libtdjson.so" \
+            "android/app/src/main/jniLibs/$ABI/libtdjson.so"
+          ls -lh "android/app/src/main/jniLibs/$ABI/libtdjson.so"
 
       - name: Flutter dependencies
         run: flutter pub get
