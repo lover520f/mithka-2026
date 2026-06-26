@@ -105,6 +105,7 @@ class _MessageBubbleState extends State<MessageBubble>
   late final AnimationController _swipeController;
   bool _stickerReady = false;
   bool _videoStickerReady = false;
+  bool _musicPressed = false;
   double _swipeX = 0;
   final Set<String> _expandedQuotes = {};
 
@@ -946,6 +947,13 @@ class _MessageBubbleState extends State<MessageBubble>
                       loading: loading,
                       playing: playing,
                       onTap: toggle,
+                      pressed: _musicPressed,
+                      onTapDown: canPlay
+                          ? () => setState(() => _musicPressed = true)
+                          : null,
+                      onTapEnd: canPlay
+                          ? () => setState(() => _musicPressed = false)
+                          : null,
                     ),
                   ],
                 ),
@@ -1061,7 +1069,10 @@ class _MessageBubbleState extends State<MessageBubble>
     TdFileRef? cover, {
     required bool loading,
     required bool playing,
+    required bool pressed,
     VoidCallback? onTap,
+    VoidCallback? onTapDown,
+    VoidCallback? onTapEnd,
   }) {
     final c = context.colors;
     const size = 58.0;
@@ -1081,6 +1092,9 @@ class _MessageBubbleState extends State<MessageBubble>
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
+      onTapDown: (_) => onTapDown?.call(),
+      onTapCancel: onTapEnd,
+      onTapUp: (_) => onTapEnd?.call(),
       child: Container(
         width: size,
         height: size,
@@ -1090,7 +1104,10 @@ class _MessageBubbleState extends State<MessageBubble>
           fit: StackFit.expand,
           children: [
             art,
-            Container(color: Colors.black.withValues(alpha: 0.18)),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 90),
+              color: Colors.black.withValues(alpha: pressed ? 0.34 : 0.18),
+            ),
             Center(
               child: Container(
                 width: 32,

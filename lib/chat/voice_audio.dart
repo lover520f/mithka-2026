@@ -74,15 +74,19 @@ class VoicePlayer extends ChangeNotifier {
       } catch (_) {}
     }
 
+    _fileId = file.id;
+    position = Duration.zero;
+    total = Duration.zero;
+    isPlaying = false;
     isLoading = true;
     notifyListeners();
     final path = await TdFileCenter.shared.path(file.id);
     isLoading = false;
     if (path == null || _disposed) {
+      if (_fileId == file.id) _fileId = null;
       notifyListeners();
       return;
     }
-    _fileId = file.id;
     _path = path;
     await _start(0, codec: codec);
   }

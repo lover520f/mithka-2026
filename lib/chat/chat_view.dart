@@ -108,6 +108,7 @@ class _ChatViewState extends State<ChatView> {
   double _backSwipeDx = 0;
   double _backSwipeDy = 0;
   bool _backSwipePopping = false;
+  bool _loadingOlderFromScroll = false;
   VelocityTracker? _backSwipeVelocity;
 
   /// Gap (seconds) between messages that triggers a fresh time separator.
@@ -133,7 +134,7 @@ class _ChatViewState extends State<ChatView> {
     if (_selectionAnchorId != null && scrollingUp != _selectionScrollingUp) {
       setState(() => _selectionScrollingUp = scrollingUp);
     }
-    if (pos.pixels < 500) unawaited(_vm.loadOlder());
+    if (pos.pixels < 500) unawaited(_loadOlderPreservingOffset());
     if (_vm.anchoredHistory &&
         pos.userScrollDirection == ScrollDirection.reverse &&
         pos.maxScrollExtent - pos.pixels < 36) {
@@ -154,6 +155,37 @@ class _ChatViewState extends State<ChatView> {
     if (!_scroll.hasClients) return true;
     final pos = _scroll.position;
     return pos.maxScrollExtent - pos.pixels <= threshold;
+  }
+
+  bool get _isUserScrolling =>
+      _scroll.hasClients && _scroll.position.isScrollingNotifier.value;
+
+  Future<void> _loadOlderPreservingOffset() async {
+    if (_loadingOlderFromScroll ||
+        _isFillingShortTranscript ||
+        !_scroll.hasClients ||
+        !_vm.canLoadOlder) {
+      return;
+    }
+    _loadingOlderFromScroll = true;
+    final oldPixels = _scroll.position.pixels;
+    final oldMax = _scroll.position.maxScrollExtent;
+    try {
+      final loaded = await _vm.loadOlder();
+      if (!loaded) return;
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !_scroll.hasClients || _scrollTargetId != null) return;
+      final delta = _scroll.position.maxScrollExtent - oldMax;
+      if (delta > 1) {
+        final target = (oldPixels + delta).clamp(
+          _scroll.position.minScrollExtent,
+          _scroll.position.maxScrollExtent,
+        );
+        _scroll.jumpTo(target);
+      }
+    } finally {
+      _loadingOlderFromScroll = false;
+    }
   }
 
   void _syncKeyboardInset(double inset) {
@@ -242,7 +274,7 @@ class _ChatViewState extends State<ChatView> {
   void _onModel() {
     if (!mounted) return;
     if (_vm.messages.length != _lastCount) {
-      final wasNearBottom = _isNearBottom(180);
+      final wasNearBottom = _isNearBottom(72);
       final previousNewestId = _lastNewestMessageId;
       final newest = _vm.messages.isEmpty ? null : _vm.messages.last;
       final appendedNewest =
@@ -258,7 +290,7 @@ class _ChatViewState extends State<ChatView> {
           _scrollTargetId == null &&
           !_vm.anchoredHistory &&
           appendedNewest &&
-          (wasNearBottom || newest.isOutgoing);
+          (newest.isOutgoing || (wasNearBottom && !_isUserScrolling));
       if (shouldAutoScroll) {
         _liveNewMessageCount = 0;
         WidgetsBinding.instance.addPostFrameCallback(
@@ -370,13 +402,13 @@ class _ChatViewState extends State<ChatView> {
   void _settleAtBottom() {
     final generation = ++_bottomSettleGeneration;
     () async {
-      for (var i = 0; i < 8; i++) {
+      for (var i = 0; i < 4; i++) {
         await WidgetsBinding.instance.endOfFrame;
         if (!mounted || generation != _bottomSettleGeneration) return;
-        if (_scroll.hasClients) {
+        if (_scroll.hasClients && _isNearBottom(420)) {
           _scroll.jumpTo(_scroll.position.maxScrollExtent);
         }
-        await Future<void>.delayed(Duration(milliseconds: i < 3 ? 16 : 48));
+        await Future<void>.delayed(const Duration(milliseconds: 24));
       }
     }();
   }
@@ -1700,7 +1732,7 @@ class _ChatViewState extends State<ChatView> {
         physics: const ClampingScrollPhysics(
           parent: AlwaysScrollableScrollPhysics(),
         ),
-        scrollCacheExtent: const ScrollCacheExtent.pixels(900),
+        scrollCacheExtent: const ScrollCacheExtent.pixels(420),
         padding: const EdgeInsets.symmetric(vertical: 8),
         itemCount: entries.length,
         itemBuilder: (context, index) {
@@ -1766,7 +1798,14 @@ class _ChatViewState extends State<ChatView> {
                 ),
             ],
           );
-          return content;
+          return KeyedSubtree(
+            key: ValueKey(
+              entry.isImageGroup
+                  ? 'album-${entry.messages.map((m) => m.id).join('-')}'
+                  : 'message-${message.id}',
+            ),
+            child: RepaintBoundary(child: content),
+          );
         },
       ),
     );

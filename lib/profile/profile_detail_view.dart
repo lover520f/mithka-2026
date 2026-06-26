@@ -56,6 +56,7 @@ class _ProfileDetailViewState extends State<ProfileDetailView> {
   String _musicTitle = '';
   ChatMessage? _musicMessage;
   final VoicePlayer _musicPlayer = VoicePlayer();
+  bool _musicPressed = false;
   bool _hideIdentity = false;
   bool _isMe = false;
 
@@ -623,9 +624,17 @@ class _ProfileDetailViewState extends State<ProfileDetailView> {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: canPlay ? toggle : _openMusicSearch,
+          onTapDown: (_) => setState(() => _musicPressed = true),
+          onTapCancel: () => setState(() => _musicPressed = false),
+          onTapUp: (_) => setState(() => _musicPressed = false),
           child: SizedBox(
             height: active || loading ? 66 : 56,
-            child: Padding(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 90),
+              curve: Curves.easeOut,
+              color: _musicPressed
+                  ? c.textPrimary.withValues(alpha: 0.06)
+                  : Colors.transparent,
               padding: const EdgeInsets.fromLTRB(20, 0, 10, 0),
               child: Row(
                 children: [
