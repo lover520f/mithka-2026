@@ -9,6 +9,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../app/app_version.dart';
 import '../auth/auth_manager.dart';
 import '../components/sf_symbols.dart';
 import '../components/ui_components.dart';
@@ -145,13 +146,27 @@ class SettingsView extends StatelessWidget {
               child: Icon(sfIcon(icon), size: 15, color: Colors.white),
             ),
             const SizedBox(width: 12),
-            Text(title, style: TextStyle(fontSize: 16, color: c.textPrimary)),
-            const Spacer(),
-            if (trailing != null)
-              Text(
-                trailing,
-                style: TextStyle(fontSize: 13, color: c.textTertiary),
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 16, color: c.textPrimary),
               ),
+            ),
+            if (trailing != null) ...[
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 110,
+                child: Text(
+                  trailing,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: 13, color: c.textTertiary),
+                ),
+              ),
+            ],
             const SizedBox(width: 6),
             Icon(sfIcon('chevron.right'), size: 14, color: c.textTertiary),
           ],
@@ -181,12 +196,15 @@ class SettingsView extends StatelessWidget {
     onTap: () => Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => const AboutView())),
-    child: _rowLabel(
-      context,
-      'info.circle',
-      '关于 Mithka',
-      const Color(0xFF8E8E93),
-      trailing: 'v1.0',
+    child: FutureBuilder<AppVersion>(
+      future: AppVersion.load(),
+      builder: (context, snapshot) => _rowLabel(
+        context,
+        'info.circle',
+        '关于 Mithka',
+        const Color(0xFF8E8E93),
+        trailing: 'v${snapshot.data?.version ?? '...'}',
+      ),
     ),
   );
 
