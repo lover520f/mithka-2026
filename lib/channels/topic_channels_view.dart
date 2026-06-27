@@ -8,10 +8,12 @@
 
 import 'package:flutter/material.dart';
 
+import '../chat/telegram_rich_text.dart';
 import '../chats/chat_list_view_model.dart';
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
 import '../components/ui_components.dart';
+import '../tdlib/chat_membership.dart';
 import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
@@ -44,7 +46,10 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
   final _model = ChatListViewModel();
   final _postsByChat = <int, List<_TopicPost>>{};
   final _loadingChats = <int>{};
+  final Map<int, bool> _joinedChatCache = {};
   bool _loading = true;
+  bool _nonMutedOnly = false;
+  int _loadGeneration = 0;
 
   @override
   void initState() {
@@ -69,7 +74,11 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
   List<ChatSummary> get _topicChats {
     final byId = <int, ChatSummary>{};
     for (final chat in [..._model.chats, ..._model.archived]) {
-      if (chat.isForum) byId[chat.id] = chat;
+      if (chat.isForum &&
+          (_joinedChatCache[chat.id] ?? true) &&
+          (!_nonMutedOnly || !chat.isMuted)) {
+        byId[chat.id] = chat;
+      }
     }
     return byId.values.toList();
   }
@@ -92,13 +101,14 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
         continue;
       }
       _loadingChats.add(chat.id);
-      _loadTopicsForChat(chat);
+      _loadTopicsForChat(chat, _loadGeneration);
     }
     if (mounted) setState(() => _loading = _loadingChats.isNotEmpty);
   }
 
-  Future<void> _loadTopicsForChat(ChatSummary chat) async {
+  Future<void> _loadTopicsForChat(ChatSummary chat, int generation) async {
     try {
+      if (!await _isJoinedChat(chat)) return;
       final response = await TdClient.shared.query({
         '@type': 'getForumTopics',
         'chat_id': chat.id,
@@ -111,6 +121,7 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
       final topics =
           response.objects('topics') ?? const <Map<String, dynamic>>[];
       final posts = <_TopicPost>[];
+      final seenMessages = <String>{};
       for (final topic in topics) {
         final info = topic.obj('info') ?? topic;
         final last = topic.obj('last_message');
@@ -119,33 +130,59 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
             info.int64('message_thread_id') ??
             topic.int64('message_thread_id') ??
             parsedLast?.id;
-        final message = await _rootPostForTopic(chat.id, threadId, parsedLast);
-        if (message == null || message.isService) continue;
-        posts.add(
-          _TopicPost(
-            chat: chat,
-            topicName: info.str('name') ?? topic.str('name') ?? chat.title,
-            threadId: threadId ?? message.id,
-            message: message,
-          ),
+        final messages = await _recentRootPostsForTopic(
+          chat.id,
+          threadId,
+          parsedLast,
         );
+        final topicName = info.str('name') ?? topic.str('name') ?? chat.title;
+        for (final message in messages) {
+          if (message.isService) continue;
+          final key = '${chat.id}:${message.id}';
+          if (!seenMessages.add(key)) continue;
+          posts.add(
+            _TopicPost(
+              chat: chat,
+              topicName: topicName,
+              threadId: threadId ?? message.id,
+              message: message,
+            ),
+          );
+        }
       }
+      if (generation != _loadGeneration) return;
       _postsByChat[chat.id] = posts;
     } catch (_) {
+      if (generation != _loadGeneration) return;
       _postsByChat[chat.id] = const [];
     } finally {
-      _loadingChats.remove(chat.id);
-      if (mounted) setState(() => _loading = _loadingChats.isNotEmpty);
+      if (generation == _loadGeneration) {
+        _loadingChats.remove(chat.id);
+        if (mounted) setState(() => _loading = _loadingChats.isNotEmpty);
+      }
     }
   }
 
-  Future<ChatMessage?> _rootPostForTopic(
+  Future<bool> _isJoinedChat(ChatSummary chat) async {
+    final cached = _joinedChatCache[chat.id];
+    if (cached != null) return cached;
+    final joined = await isJoinedGroupOrChannelChat(chat.id);
+    _joinedChatCache[chat.id] = joined;
+    if (!joined) {
+      _postsByChat.remove(chat.id);
+      if (mounted) setState(() {});
+    }
+    return joined;
+  }
+
+  Future<List<ChatMessage>> _recentRootPostsForTopic(
     int chatId,
     int? threadId,
     ChatMessage? fallback,
   ) async {
-    if (fallback != null && fallback.replyToMessageId == null) return fallback;
-    if (threadId == null) return fallback;
+    if (threadId == null) {
+      return fallback == null || fallback.isService ? const [] : [fallback];
+    }
     try {
       final response = await TdClient.shared.query({
         '@type': 'getMessageThreadHistory',
@@ -153,7 +190,7 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
         'message_id': threadId,
         'from_message_id': 0,
         'offset': 0,
-        'limit': 20,
+        'limit': 30,
       });
       final messages =
           (response.objects('messages') ?? const <Map<String, dynamic>>[])
@@ -163,10 +200,22 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
               .where((message) => message.replyToMessageId == null)
               .toList()
             ..sort((a, b) => b.date.compareTo(a.date));
-      return messages.isEmpty ? fallback : messages.first;
+      if (messages.isNotEmpty) return messages;
     } catch (_) {
-      return fallback;
+      // Fall through to the topic's last message as a best-effort preview.
     }
+    return fallback == null || fallback.isService ? const [] : [fallback];
+  }
+
+  void _toggleNonMutedOnly() {
+    setState(() {
+      _nonMutedOnly = !_nonMutedOnly;
+      _loadGeneration += 1;
+      _postsByChat.clear();
+      _loadingChats.clear();
+      _loading = true;
+    });
+    _loadTopics();
   }
 
   @override
@@ -182,6 +231,21 @@ class _TopicChannelsViewState extends State<TopicChannelsView> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _toggleNonMutedOnly,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 8, 0, 8),
+                    child: Icon(
+                      _nonMutedOnly
+                          ? sfIcon('bell.fill')
+                          : sfIcon('bell.slash.fill'),
+                      size: 24,
+                      color: _nonMutedOnly ? AppTheme.brand : c.textPrimary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.lg),
                 Icon(sfIcon('magnifyingglass'), size: 25, color: c.textPrimary),
                 const SizedBox(width: AppSpacing.xl),
                 Icon(
@@ -297,8 +361,9 @@ class _TopicPostRow extends StatelessWidget {
             ),
             if (text.isNotEmpty) ...[
               const SizedBox(height: 12),
-              Text(
-                text,
+              TelegramRichText(
+                text: text,
+                entities: post.message.textEntities,
                 maxLines: 6,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(

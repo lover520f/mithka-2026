@@ -17,12 +17,14 @@ import '../chat/chat_picker_view.dart';
 import '../chat/full_image_viewer.dart';
 import '../chat/chat_view.dart';
 import '../chat/rich_text_format.dart';
+import '../chat/telegram_rich_text.dart';
 import '../chats/chat_list_view_model.dart';
 import '../components/toast.dart';
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
 import '../components/ui_components.dart';
 import '../settings/accent_color_picker_view.dart';
+import '../tdlib/chat_membership.dart';
 import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
@@ -85,6 +87,7 @@ class ChannelPostComment {
     required this.messageId,
     required this.senderName,
     required this.text,
+    this.entities = const [],
     this.senderPhoto,
     this.date = 0,
     this.replyToMessageId,
@@ -95,6 +98,7 @@ class ChannelPostComment {
   final int messageId;
   final String senderName;
   final String text;
+  final List<MessageTextEntity> entities;
   final TdFileRef? senderPhoto;
   final int date;
   final int? replyToMessageId;
@@ -322,6 +326,7 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
   final Set<String> _loadingLikeNames = {};
   final Set<String> _loadingComments = {};
   final Set<String> _loadingThreadTargets = {};
+  final Map<int, bool> _joinedChannelCache = {};
   List<ChatSummary> _postableChannels = const [];
   String _postableSignature = '';
   ChannelPost? _replyPost;
@@ -334,10 +339,9 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
   bool _loadingPosts = false;
   bool _loadingPostableChannels = false;
   bool _refreshingLiveUpdates = false;
-  bool _deferredAllChannelLoadScheduled = false;
-  bool _hasLoadedAllChannelPostsOnce = false;
+  bool _nonMutedOnly = false;
+  int _feedLoadGeneration = 0;
   static const _perChannelPageSize = 30;
-  static const _initialChannelPostBatchSize = 12;
   static const _metadataHydrationLimit = 60;
   static const _feedLimit = 500;
 
@@ -454,6 +458,7 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
     if (mounted) setState(() {});
     final futures = <Future<void>>[];
     for (final channel in channels) {
+      if (!await _isJoinedChannel(channel)) continue;
       if (!_loadingChannels.add(channel.id)) continue;
       futures.add(_loadPostsForChannel(channel, fromMessageId: 0));
     }
@@ -469,12 +474,16 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
   List<ChatSummary> get _channels {
     final byId = <int, ChatSummary>{};
     for (final chat in widget.initialChannels) {
-      if (chat.kind == ChatKind.channel) {
+      if (chat.kind == ChatKind.channel &&
+          (_joinedChannelCache[chat.id] ?? true) &&
+          (!_nonMutedOnly || !chat.isMuted)) {
         byId[chat.id] = chat;
       }
     }
     for (final chat in [..._model.chats, ..._model.archived]) {
-      if (chat.kind == ChatKind.channel) {
+      if (chat.kind == ChatKind.channel &&
+          (_joinedChannelCache[chat.id] ?? true) &&
+          (!_nonMutedOnly || !chat.isMuted)) {
         byId[chat.id] = chat;
       }
     }
@@ -600,23 +609,10 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
       _loadingPosts = false;
       return;
     }
-    final deferRest =
-        !loadOlder &&
-        !_hasLoadedAllChannelPostsOnce &&
-        allChannels.length > _initialChannelPostBatchSize;
-    final channels = deferRest
-        ? allChannels.take(_initialChannelPostBatchSize).toList()
-        : allChannels;
-    if (deferRest && !_deferredAllChannelLoadScheduled) {
-      _deferredAllChannelLoadScheduled = true;
-      Future<void>.delayed(const Duration(milliseconds: 700), () {
-        if (!mounted) return;
-        _hasLoadedAllChannelPostsOnce = true;
-        _deferredAllChannelLoadScheduled = false;
-        _loadChannelPosts();
-      });
-    }
+    final channels = allChannels;
+    final generation = _feedLoadGeneration;
     for (final channel in channels) {
+      if (!await _isJoinedChannel(channel)) continue;
       final hasLoaded = _postsByChannel.containsKey(channel.id);
       if (_loadingChannels.contains(channel.id) ||
           _exhaustedChannels.contains(channel.id) ||
@@ -629,15 +625,31 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
         fromMessageId: loadOlder
             ? (_oldestMessageByChannel[channel.id] ?? 0)
             : 0,
+        generation: generation,
       );
     }
     _loadingPosts = _loadingChannels.isNotEmpty;
     if (mounted) setState(() {});
   }
 
+  Future<bool> _isJoinedChannel(ChatSummary channel) async {
+    final cached = _joinedChannelCache[channel.id];
+    if (cached != null) return cached;
+    final joined = await isJoinedGroupOrChannelChat(channel.id);
+    _joinedChannelCache[channel.id] = joined;
+    if (!joined) {
+      _postsByChannel.remove(channel.id);
+      _oldestMessageByChannel.remove(channel.id);
+      _exhaustedChannels.add(channel.id);
+      if (mounted) setState(() {});
+    }
+    return joined;
+  }
+
   Future<void> _loadPostsForChannel(
     ChatSummary channel, {
     required int fromMessageId,
+    int? generation,
   }) async {
     try {
       final response = await TdClient.shared.query({
@@ -655,18 +667,37 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
               .where((message) => !message.isService)
               .map((message) => ChannelPost(channel: channel, message: message))
               .toList();
+      if (generation != null && generation != _feedLoadGeneration) return;
       if (messages.isEmpty) {
         _exhaustedChannels.add(channel.id);
       }
       _appendPosts(channel.id, messages);
       _schedulePostMetadataHydration();
     } catch (_) {
+      if (generation != null && generation != _feedLoadGeneration) return;
       _postsByChannel.putIfAbsent(channel.id, () => const []);
     } finally {
-      _loadingChannels.remove(channel.id);
-      _loadingPosts = _loadingChannels.isNotEmpty;
-      if (mounted) setState(() {});
+      if (generation == null || generation == _feedLoadGeneration) {
+        _loadingChannels.remove(channel.id);
+        _loadingPosts = _loadingChannels.isNotEmpty;
+        if (mounted) setState(() {});
+      }
     }
+  }
+
+  void _toggleNonMutedOnly() {
+    setState(() {
+      _nonMutedOnly = !_nonMutedOnly;
+      _feedLoadGeneration += 1;
+      _postsByChannel.clear();
+      _oldestMessageByChannel.clear();
+      _exhaustedChannels.clear();
+      _loadingChannels.clear();
+      _postableSignature = '';
+      _loadingPosts = true;
+    });
+    _loadChannelPosts();
+    _loadPostableChannels();
   }
 
   void _schedulePostMetadataHydration() {
@@ -781,6 +812,7 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
             messageId: message.id,
             senderName: senderName ?? '用户',
             text: _commentText(message),
+            entities: _commentEntities(message),
           ),
         );
       }
@@ -797,6 +829,12 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
     final text = message.text.trim();
     if (text.startsWith('[') && text.endsWith(']')) return '';
     return text;
+  }
+
+  List<MessageTextEntity> _commentEntities(ChatMessage message) {
+    return message.text == message.text.trim()
+        ? message.textEntities
+        : const [];
   }
 
   void _appendPosts(int channelId, List<ChannelPost> posts) {
@@ -843,9 +881,7 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
 
   void _loadAuthors(List<ChannelPost> posts) {
     for (final post in posts) {
-      final name = post.message.senderTitle?.trim();
-      if (name == null || name.isEmpty || post.authorName != null) continue;
-      post.authorName = name;
+      if (post.authorName != null) continue;
       _resolvePostAuthor(post);
     }
   }
@@ -858,13 +894,22 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
           '@type': 'getUser',
           'user_id': senderId,
         });
+        final name = TDParse.userName(user).trim();
+        if (name.isNotEmpty) post.authorName = name;
         post.authorPhoto = TDParse.smallPhoto(user.obj('profile_photo'));
       } else if (senderId != null && senderId < 0) {
         final chat = await TdClient.shared.query({
           '@type': 'getChat',
           'chat_id': senderId,
         });
+        final name = chat.str('title')?.trim();
+        if (name != null && name.isNotEmpty) post.authorName = name;
         post.authorPhoto = TDParse.smallPhoto(chat.obj('photo'));
+      } else {
+        final title = post.message.senderTitle?.trim();
+        if (title != null && title.isNotEmpty && !_isRoleLabel(title)) {
+          post.authorName = title;
+        }
       }
     } catch (_) {}
     if (mounted) setState(() {});
@@ -925,10 +970,13 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
   }
 
   Future<String?> _senderName(ChatMessage message) async {
-    final title = message.senderTitle?.trim();
-    if (title != null && title.isNotEmpty) return title;
     final senderId = message.senderId;
-    if (senderId == null) return null;
+    if (senderId == null) {
+      final title = message.senderTitle?.trim();
+      return title != null && title.isNotEmpty && !_isRoleLabel(title)
+          ? title
+          : null;
+    }
     try {
       if (senderId > 0) {
         final user = await TdClient.shared.query({
@@ -945,8 +993,21 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
       final name = chat.str('title')?.trim();
       return name == null || name.isEmpty ? null : name;
     } catch (_) {
-      return null;
+      final title = message.senderTitle?.trim();
+      return title != null && title.isNotEmpty && !_isRoleLabel(title)
+          ? title
+          : null;
     }
+  }
+
+  bool _isRoleLabel(String value) {
+    final text = value.trim();
+    return text == '群主' ||
+        text == '管理员' ||
+        text == '成员' ||
+        text == '频道主' ||
+        text == '版主' ||
+        (text.startsWith('【') && text.endsWith('】') && text.length <= 8);
   }
 
   int _reactionCount(ChatMessage message) =>
@@ -1107,17 +1168,37 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
           NavHeader(
             title: '动态',
             onBack: widget.isRootTab ? null : () => Navigator.of(context).pop(),
-            trailing: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _openSearch,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
-                child: Icon(
-                  sfIcon('magnifyingglass'),
-                  size: 25,
-                  color: c.textPrimary,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _toggleNonMutedOnly,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 8, 0, 8),
+                    child: Icon(
+                      _nonMutedOnly
+                          ? sfIcon('bell.fill')
+                          : sfIcon('bell.slash.fill'),
+                      size: 24,
+                      color: _nonMutedOnly ? AppTheme.brand : c.textPrimary,
+                    ),
+                  ),
                 ),
-              ),
+                const SizedBox(width: AppSpacing.lg),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _openSearch,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
+                    child: Icon(
+                      sfIcon('magnifyingglass'),
+                      size: 25,
+                      color: c.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -1495,9 +1576,7 @@ class _ChannelMomentsSearchViewState extends State<ChannelMomentsSearchView> {
 
   void _hydrateAuthors(List<ChannelPost> posts) {
     for (final post in posts) {
-      final name = post.message.senderTitle?.trim();
-      if (name == null || name.isEmpty || post.authorName != null) continue;
-      post.authorName = name;
+      if (post.authorName != null) continue;
       unawaited(_resolvePostAuthor(post));
     }
   }
@@ -1510,16 +1589,35 @@ class _ChannelMomentsSearchViewState extends State<ChannelMomentsSearchView> {
           '@type': 'getUser',
           'user_id': senderId,
         });
+        final name = TDParse.userName(user).trim();
+        if (name.isNotEmpty) post.authorName = name;
         post.authorPhoto = TDParse.smallPhoto(user.obj('profile_photo'));
       } else if (senderId != null && senderId < 0) {
         final chat = await TdClient.shared.query({
           '@type': 'getChat',
           'chat_id': senderId,
         });
+        final name = chat.str('title')?.trim();
+        if (name != null && name.isNotEmpty) post.authorName = name;
         post.authorPhoto = TDParse.smallPhoto(chat.obj('photo'));
+      } else {
+        final title = post.message.senderTitle?.trim();
+        if (title != null && title.isNotEmpty && !_isRoleLabel(title)) {
+          post.authorName = title;
+        }
       }
     } catch (_) {}
     if (mounted) setState(() {});
+  }
+
+  bool _isRoleLabel(String value) {
+    final text = value.trim();
+    return text == '群主' ||
+        text == '管理员' ||
+        text == '成员' ||
+        text == '频道主' ||
+        text == '版主' ||
+        (text.startsWith('【') && text.endsWith('】') && text.length <= 8);
   }
 
   void _openPost(ChannelPost post) {
@@ -1913,6 +2011,7 @@ class _ChannelPostDetailViewState extends State<ChannelPostDetailView> {
             senderName: sender.name,
             senderPhoto: sender.photo,
             text: _commentText(message),
+            entities: _commentEntities(message),
             date: message.date,
             replyToMessageId: message.replyToMessageId,
             reactionCount: _reactionCount(message),
@@ -1934,6 +2033,12 @@ class _ChannelPostDetailViewState extends State<ChannelPostDetailView> {
     final text = message.text.trim();
     if (text.startsWith('[') && text.endsWith(']')) return '';
     return text;
+  }
+
+  List<MessageTextEntity> _commentEntities(ChatMessage message) {
+    return message.text == message.text.trim()
+        ? message.textEntities
+        : const [];
   }
 
   int _reactionCount(ChatMessage message) =>
@@ -2353,22 +2458,27 @@ class _DetailCommentTile extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 4),
-                  RichText(
-                    text: TextSpan(
-                      style: TextStyle(
-                        fontSize: 15,
-                        height: 1.28,
-                        color: c.textPrimary,
-                      ),
-                      children: [
-                        if (prefix != null)
-                          TextSpan(
-                            text: prefix,
-                            style: TextStyle(color: c.textSecondary),
+                  Wrap(
+                    children: [
+                      if (prefix != null)
+                        Text(
+                          prefix!,
+                          style: TextStyle(
+                            fontSize: 15,
+                            height: 1.28,
+                            color: c.textSecondary,
                           ),
-                        TextSpan(text: comment.text),
-                      ],
-                    ),
+                        ),
+                      TelegramRichText(
+                        text: comment.text,
+                        entities: comment.entities,
+                        style: TextStyle(
+                          fontSize: 15,
+                          height: 1.28,
+                          color: c.textPrimary,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -3011,8 +3121,9 @@ class ChannelPostRow extends StatelessWidget {
             ),
             if (text.isNotEmpty) ...[
               const SizedBox(height: 12),
-              Text(
-                text,
+              TelegramRichText(
+                text: text,
+                entities: _displayTextMessage?.textEntities ?? const [],
                 style: TextStyle(
                   fontSize: 15,
                   height: 1.35,
@@ -3049,13 +3160,17 @@ class ChannelPostRow extends StatelessWidget {
   }
 
   String get _displayText {
+    return _displayTextMessage?.text.trim() ?? '';
+  }
+
+  ChatMessage? get _displayTextMessage {
     for (final message in messages) {
       final text = message.text.trim();
       if (text.isNotEmpty && !(text.startsWith('[') && text.endsWith(']'))) {
-        return text;
+        return message;
       }
     }
-    return '';
+    return null;
   }
 
   List<ChatMessage> get _imageMessages => messages
@@ -3141,26 +3256,29 @@ class _InlineComments extends StatelessWidget {
             ),
             child: Padding(
               padding: const EdgeInsets.only(top: 3),
-              child: RichText(
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                text: TextSpan(
-                  style: TextStyle(
-                    fontSize: 14,
-                    height: 1.25,
-                    color: c.textPrimary,
-                  ),
-                  children: [
-                    TextSpan(
-                      text: '${comment.senderName}: ',
-                      style: TextStyle(
-                        color: c.linkBlue,
-                        fontWeight: FontWeight.w500,
-                      ),
+              child: Wrap(
+                children: [
+                  Text(
+                    '${comment.senderName}: ',
+                    style: TextStyle(
+                      fontSize: 14,
+                      height: 1.25,
+                      color: c.linkBlue,
+                      fontWeight: FontWeight.w500,
                     ),
-                    TextSpan(text: comment.text),
-                  ],
-                ),
+                  ),
+                  TelegramRichText(
+                    text: comment.text,
+                    entities: comment.entities,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      height: 1.25,
+                      color: c.textPrimary,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
