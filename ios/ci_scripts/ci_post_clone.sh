@@ -37,6 +37,27 @@ echo "▸ repo root: $REPO"
 GIT_COMMIT="$(git rev-parse --short HEAD)"
 echo "▸ git commit: $GIT_COMMIT"
 
+# Xcode Cloud runs xcodebuild after this script and can otherwise keep using
+# stale FLUTTER_BUILD_NAME values from the checked-in project. Keep the archive
+# version sourced from pubspec.yaml, matching the Android/GitHub release flow.
+RAW_VERSION="$(awk '/^version:/ { print $2; exit }' pubspec.yaml)"
+test -n "$RAW_VERSION"
+APP_BUILD_NAME="${RAW_VERSION%%+*}"
+APP_BUILD_NUMBER="${RAW_VERSION#*+}"
+if [ "$APP_BUILD_NUMBER" = "$RAW_VERSION" ]; then
+  APP_BUILD_NUMBER=1
+fi
+echo "▸ app version: $APP_BUILD_NAME+$APP_BUILD_NUMBER"
+python3 - <<PY
+from pathlib import Path
+path = Path("ios/Runner.xcodeproj/project.pbxproj")
+text = path.read_text()
+text = __import__("re").sub(r"FLUTTER_BUILD_NAME = [^;]+;", "FLUTTER_BUILD_NAME = ${APP_BUILD_NAME};", text)
+text = __import__("re").sub(r"MARKETING_VERSION = [^;]+;", "MARKETING_VERSION = ${APP_BUILD_NAME};", text)
+text = __import__("re").sub(r"CURRENT_PROJECT_VERSION = (?!\"\\$\\(FLUTTER_BUILD_NUMBER\\)\")[^;]+;", "CURRENT_PROJECT_VERSION = ${APP_BUILD_NUMBER};", text)
+path.write_text(text)
+PY
+
 # --- Flutter SDK (pinned) ---------------------------------------------------
 if ! command -v flutter >/dev/null 2>&1; then
   echo "▸ installing Flutter $FLUTTER_VERSION"
@@ -82,7 +103,10 @@ echo "▸ generating Flutter iOS build inputs"
 flutter config --no-enable-swift-package-manager
 flutter precache --ios
 flutter pub get
-flutter build ios --config-only --release --dart-define="GIT_COMMIT=$GIT_COMMIT"
+flutter build ios --config-only --release \
+  --build-name="$APP_BUILD_NAME" \
+  --build-number="$APP_BUILD_NUMBER" \
+  --dart-define="GIT_COMMIT=$GIT_COMMIT"
 
 # --- CocoaPods --------------------------------------------------------------
 if ! command -v pod >/dev/null 2>&1; then

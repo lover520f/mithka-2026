@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import '../components/toast.dart';
 import 'package:provider/provider.dart';
 
+import '../channels/topic_chat_view.dart';
 import '../chat/chat_view.dart';
 import '../chat/custom_emoji.dart';
 import '../components/drawer_controller.dart' as dc;
@@ -51,10 +52,34 @@ class ChatListController extends ChangeNotifier {
   }
 }
 
+class ChatListSelection {
+  const ChatListSelection({
+    required this.chatId,
+    required this.title,
+    this.chat,
+  });
+
+  ChatListSelection.fromChat(ChatSummary chat)
+    : this(chatId: chat.id, title: chat.title, chat: chat);
+
+  final int chatId;
+  final String title;
+  final ChatSummary? chat;
+
+  bool get isForum => chat?.isForum ?? false;
+}
+
 class ChatListView extends StatefulWidget {
-  const ChatListView({super.key, this.controller});
+  const ChatListView({
+    super.key,
+    this.controller,
+    this.onChatSelected,
+    this.selectedChatId,
+  });
 
   final ChatListController? controller;
+  final ValueChanged<ChatListSelection>? onChatSelected;
+  final int? selectedChatId;
 
   @override
   State<ChatListView> createState() => _ChatListViewState();
@@ -153,9 +178,16 @@ class _ChatListViewState extends State<ChatListView> {
   }
 
   void _openChat(ChatSummary chat) {
+    final onChatSelected = widget.onChatSelected;
+    if (onChatSelected != null) {
+      onChatSelected(ChatListSelection.fromChat(chat));
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ChatView(chatId: chat.id, title: chat.title),
+        builder: (_) => chat.isForum
+            ? TopicChatView(chat: chat)
+            : ChatView(chatId: chat.id, title: chat.title),
       ),
     );
   }
@@ -189,6 +221,11 @@ class _ChatListViewState extends State<ChatListView> {
       });
       final id = chat.int64('id') ?? chat.int64('chat_id');
       if (!mounted || id == null) return;
+      final selection = ChatListSelection(chatId: id, title: title);
+      if (widget.onChatSelected != null) {
+        widget.onChatSelected!(selection);
+        return;
+      }
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => ChatView(chatId: id, title: title),
@@ -525,6 +562,16 @@ class _ChatListViewState extends State<ChatListView> {
           final visibleRows = math.max(1, (geo.maxHeight / rowH).ceil());
           _lastVisibleRows = visibleRows;
           final chats = _model.chats;
+          if (chats.isEmpty && _model.isInitialLoading) {
+            return ListView.builder(
+              padding: EdgeInsets.zero,
+              itemCount: visibleRows + (showSearch ? 1 : 0),
+              itemBuilder: (context, i) {
+                if (showSearch && i == 0) return _searchPill();
+                return const _ChatRowPlaceholder();
+              },
+            );
+          }
           final hasArchive = _model.isAllFilter && _model.archived.isNotEmpty;
           final assistantIndex = math.min(visibleRows + 1, chats.length);
 
@@ -577,7 +624,11 @@ class _ChatListViewState extends State<ChatListView> {
         ),
       ],
       child: _rowContainer(
-        ChatRowView(chat: chat, onClearUnread: () => _model.markRead(chat)),
+        ChatRowView(
+          chat: chat,
+          selected: widget.selectedChatId == chat.id,
+          onClearUnread: () => _model.markRead(chat),
+        ),
       ),
     );
   }
@@ -643,6 +694,78 @@ class _ChatListViewState extends State<ChatListView> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ChatRowPlaceholder extends StatelessWidget {
+  const _ChatRowPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final rowHeight = context.watch<ThemeController>().rowHeight;
+    return SizedBox(
+      height: rowHeight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+        child: Row(
+          children: [
+            Container(
+              width: AppMetric.avatarSize,
+              height: AppMetric.avatarSize,
+              decoration: BoxDecoration(
+                color: c.searchFill,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.lg),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  FractionallySizedBox(
+                    widthFactor: 0.34,
+                    child: _PlaceholderBar(height: 16, color: c.searchFill),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  FractionallySizedBox(
+                    widthFactor: 0.68,
+                    child: _PlaceholderBar(height: 13, color: c.searchFill),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.lg),
+            _PlaceholderBar(width: 44, height: 12, color: c.searchFill),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PlaceholderBar extends StatelessWidget {
+  const _PlaceholderBar({
+    required this.height,
+    required this.color,
+    this.width,
+  });
+
+  final double? width;
+  final double height;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(height / 2),
       ),
     );
   }

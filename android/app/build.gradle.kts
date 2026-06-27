@@ -34,7 +34,7 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // TDLib (tdjson) needs API 21+. jniLibs/<abi>/libtdjson.so is bundled
         // automatically by the Android Gradle plugin (see scripts/build-tdjson-android.sh).
-        minSdk = maxOf(21, flutter.minSdkVersion)
+        minSdk = maxOf(23, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -98,4 +98,6 @@ dependencies {
     // the real media transport behind the CallMediaEngine seam; CallMediaPlugin
     // drives its 1:1 P2P API from the TDLib callStateReady payload.
     implementation("io.github.pytgcalls:ntgcalls:2.2.5")
+    implementation("com.google.mlkit:language-id:17.0.6")
+    implementation("com.google.mlkit:translate:17.0.3")
 }

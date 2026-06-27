@@ -41,6 +41,7 @@ abstract final class AppRadius {
   static const double md = 6;
   static const double control = 9;
   static const double card = 12;
+  static const double lg = 12;
 }
 
 abstract final class AppIconSize {

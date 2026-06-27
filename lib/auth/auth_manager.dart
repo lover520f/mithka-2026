@@ -91,7 +91,10 @@ class AuthManager extends ChangeNotifier {
     debugPrint('🔑 [Mithka] authorizationState → ${state.type ?? 'nil'}');
     switch (state.type) {
       case 'authorizationStateWaitTdlibParameters':
-        break; // parameters sent by TdClient (per-account bootstrap)
+        // The lower-level router normally sends these before broadcasting the
+        // state. On Flutter hot restart, Dart-side lifecycle can be rebuilt
+        // while tdjson is still alive, so repeat the active bootstrap here.
+        _client.sendParametersForActiveClient();
       case 'authorizationStateWaitPhoneNumber':
         _set(const AuthWaitPhoneNumber());
       case 'authorizationStateWaitCode':

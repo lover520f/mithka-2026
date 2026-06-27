@@ -539,47 +539,71 @@ class _ChatInfoViewState extends State<ChatInfoView> {
 
   Widget _togglesCard() {
     final showGroupAssistant = _vm.isMuted || _vm.isArchived;
-    return Container(
-      decoration: _card,
-      child: Column(
-        children: [
-          _toggleRow('置顶聊天', _vm.isPinned, _vm.setPinned),
+    return SettingsCard(
+      children: [
+        SettingsSwitchRow(
+          title: '置顶聊天',
+          value: _vm.isPinned,
+          onChanged: _vm.setPinned,
+          height: 52,
+          leadingInset: 14,
+        ),
+        const InsetDivider(leadingInset: 14),
+        SettingsSwitchRow(
+          title: '消息免打扰',
+          value: _vm.isMuted,
+          onChanged: _vm.setMuted,
+          height: 52,
+          leadingInset: 14,
+        ),
+        if (showGroupAssistant) ...[
           const InsetDivider(leadingInset: 14),
-          _toggleRow('消息免打扰', _vm.isMuted, _vm.setMuted),
-          if (showGroupAssistant) ...[
-            const InsetDivider(leadingInset: 14),
-            _toggleRow('收进群助手', _vm.isArchived, _vm.setArchived),
-          ],
+          SettingsSwitchRow(
+            title: '收进群助手',
+            value: _vm.isArchived,
+            onChanged: _vm.setArchived,
+            height: 52,
+            leadingInset: 14,
+          ),
         ],
-      ),
+        const InsetDivider(leadingInset: 14),
+        SettingsRow(
+          title: '自动删除消息',
+          value: TDParse.formatDuration(_vm.autoDeleteTime),
+          onTap: _chooseAutoDelete,
+          height: 52,
+          leadingInset: 14,
+        ),
+      ],
     );
   }
 
-  Widget _toggleRow(String title, bool value, ValueChanged<bool> onChanged) {
-    final c = context.colors;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => onChanged(!value),
-      child: SizedBox(
-        height: 52,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(
-            children: [
-              Text(title, style: TextStyle(fontSize: 15, color: c.textPrimary)),
-              const Spacer(),
-              IgnorePointer(
-                child: CupertinoSwitch(
-                  value: value,
-                  activeTrackColor: AppTheme.brand,
-                  onChanged: onChanged,
-                ),
-              ),
-            ],
-          ),
+  Future<void> _chooseAutoDelete() async {
+    final options = <(String, int)>[
+      ('关闭', 0),
+      ('1天', 86400),
+      ('7天', 604800),
+      ('1个月', 2592000),
+    ];
+    final selected = await showCupertinoModalPopup<int>(
+      context: context,
+      builder: (context) => CupertinoActionSheet(
+        title: const Text('自动删除消息'),
+        actions: [
+          for (final option in options)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.of(context).pop(option.$2),
+              child: Text(option.$1),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
         ),
       ),
     );
+    if (selected == null) return;
+    _vm.setAutoDeleteTime(selected);
   }
 
   Widget _destructiveCard() {
@@ -1044,6 +1068,7 @@ class ChatInfoViewModel extends ChangeNotifier {
   bool isPinned = false;
   bool isMuted = false;
   bool isArchived = false;
+  int autoDeleteTime = 0;
   List<ChatMember> members = [];
   bool canInvite = false;
   bool canRemove = false;
@@ -1074,6 +1099,11 @@ class ChatInfoViewModel extends ChangeNotifier {
     final kind = TDParse.chatKind(chat);
     isGroup = kind == ChatKind.group || kind == ChatKind.channel;
     isMuted = (chat.obj('notification_settings')?.integer('mute_for') ?? 0) > 0;
+    autoDeleteTime =
+        chat.obj('message_auto_delete_time')?.integer('time') ??
+        chat.integer('message_auto_delete_time') ??
+        chat.integer('auto_delete_time') ??
+        0;
     final type = chat.obj('type');
     if (type?.type == 'chatTypeSupergroup') {
       groupNumber = type?.int64('supergroup_id')?.toString() ?? '';
@@ -1260,6 +1290,19 @@ class ChatInfoViewModel extends ChangeNotifier {
           notifyListeners();
           return <String, dynamic>{};
         });
+  }
+
+  void setAutoDeleteTime(int seconds) {
+    autoDeleteTime = seconds;
+    notifyListeners();
+    TdClient.shared.send({
+      '@type': 'setChatMessageAutoDeleteTime',
+      'chat_id': chatId,
+      'message_auto_delete_time': {
+        '@type': 'messageAutoDeleteTime',
+        'time': seconds,
+      },
+    });
   }
 
   void clearHistory() {

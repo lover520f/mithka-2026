@@ -15,6 +15,7 @@ class TranslationLanguage {
 }
 
 enum TranslationProvider {
+  nativeOnDevice('native_on_device', '本机'),
   tdlib('tdlib', 'Telegram'),
   myMemory('my_memory', 'MyMemory'),
   lingva('lingva', 'Lingva'),
@@ -25,8 +26,10 @@ enum TranslationProvider {
   final String storageValue;
   final String label;
 
-  static TranslationProvider fromStorage(String? value) =>
-      TranslationProvider.myMemory;
+  static TranslationProvider fromStorage(String? value) {
+    if (value == nativeOnDevice.storageValue) return nativeOnDevice;
+    return nativeOnDevice;
+  }
 }
 
 class TranslationController extends ChangeNotifier {
@@ -36,7 +39,9 @@ class TranslationController extends ChangeNotifier {
       _provider = TranslationProvider.fromStorage(
         _prefs.getString(_providerKey),
       ),
-      _targetLanguageCode = _prefs.getString(_targetLanguageKey) ?? 'auto',
+      _targetLanguageCode = _normalizeTargetLanguage(
+        _prefs.getString(_targetLanguageKey),
+      ),
       _noTranslateLanguageCodes =
           (_prefs.getStringList(_noTranslateLanguagesKey) ?? const <String>[])
               .toSet(),
@@ -56,9 +61,7 @@ class TranslationController extends ChangeNotifier {
 
   static const defaultLingvaEndpoint = 'https://lingva.ml';
 
-  static const autoTarget = TranslationLanguage('auto', '跟随系统');
   static const targetLanguages = <TranslationLanguage>[
-    autoTarget,
     TranslationLanguage('zh-Hans', '简体中文'),
     TranslationLanguage('zh-Hant', '繁體中文'),
     TranslationLanguage('en', 'English'),
@@ -144,13 +147,17 @@ class TranslationController extends ChangeNotifier {
   }
 
   set provider(TranslationProvider value) {
-    if (_provider == TranslationProvider.myMemory) return;
-    _provider = TranslationProvider.myMemory;
-    _prefs.setString(_providerKey, TranslationProvider.myMemory.storageValue);
+    if (_provider == TranslationProvider.nativeOnDevice) return;
+    _provider = TranslationProvider.nativeOnDevice;
+    _prefs.setString(
+      _providerKey,
+      TranslationProvider.nativeOnDevice.storageValue,
+    );
     notifyListeners();
   }
 
   set targetLanguageCode(String value) {
+    value = _normalizeTargetLanguage(value);
     if (_targetLanguageCode == value) return;
     _targetLanguageCode = value;
     _prefs.setString(_targetLanguageKey, value);
@@ -193,10 +200,13 @@ class TranslationController extends ChangeNotifier {
 
   static String labelForTarget(String code) => targetLanguages
       .firstWhere(
-        (l) => l.code == code,
-        orElse: () => TranslationLanguage(code, code),
+        (l) => l.code == _normalizeTargetLanguage(code),
+        orElse: () => const TranslationLanguage('zh-Hans', '简体中文'),
       )
       .label;
+
+  static String _normalizeTargetLanguage(String? code) =>
+      code == null || code.isEmpty || code == 'auto' ? 'zh-Hans' : code;
 
   static String? normalizeLanguageCode(String? code) {
     if (code == null || code.isEmpty) return null;

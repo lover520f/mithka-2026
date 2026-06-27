@@ -45,6 +45,87 @@ void main() {
       };
       expect(TDParse.messageText(content), 'hello');
     });
+
+    test('flattens Telegram core RichText markdown nodes', () {
+      final rich = <String, dynamic>{
+        '@type': 'textConcat',
+        'texts': [
+          {'@type': 'textPlain', 'text': 'Hello '},
+          {
+            '@type': 'textBold',
+            'text': {'@type': 'textPlain', 'text': 'bold'},
+          },
+          {'@type': 'textPlain', 'text': ' '},
+          {
+            '@type': 'textUrl',
+            'text': {'@type': 'textPlain', 'text': 'site'},
+            'url': 'https://example.com',
+          },
+        ],
+      };
+
+      expect(TDParse.richTextText(rich), 'Hello bold site');
+      final entities = TDParse.richTextEntities(rich);
+      expect(entities.map((e) => e.type), [
+        'textEntityTypeBold',
+        'textEntityTypeTextUrl',
+      ]);
+      expect(entities[1].url, 'https://example.com');
+    });
+
+    test('parses TDLib messageRichMessage in chat messages', () {
+      final message = TDParse.message({
+        '@type': 'message',
+        'id': 100,
+        'date': 1,
+        'is_outgoing': false,
+        'content': {
+          '@type': 'messageRichMessage',
+          'message': {
+            '@type': 'richMessage',
+            'is_rtl': false,
+            'is_full': true,
+            'blocks': [
+              {
+                '@type': 'pageBlockParagraph',
+                'text': {
+                  '@type': 'richTexts',
+                  'texts': [
+                    {'@type': 'richTextPlain', 'text': 'Hello '},
+                    {
+                      '@type': 'richTextBold',
+                      'text': {'@type': 'richTextPlain', 'text': 'bold'},
+                    },
+                    {'@type': 'richTextPlain', 'text': ' and '},
+                    {
+                      '@type': 'richTextUrl',
+                      'text': {'@type': 'richTextPlain', 'text': 'link'},
+                      'url': 'https://example.com',
+                      'is_cached': false,
+                    },
+                  ],
+                },
+              },
+              {
+                '@type': 'pageBlockPreformatted',
+                'language': 'dart',
+                'text': {'@type': 'richTextPlain', 'text': 'final x = 1;'},
+              },
+            ],
+          },
+        },
+      });
+
+      expect(message, isNotNull);
+      expect(message!.text, 'Hello bold and link\n\nfinal x = 1;');
+      expect(message.textEntities.map((e) => e.type), [
+        'textEntityTypeBold',
+        'textEntityTypeTextUrl',
+        'textEntityTypePreCode',
+      ]);
+      expect(message.textEntities[1].url, 'https://example.com');
+      expect(message.textEntities[2].language, 'dart');
+    });
   });
 
   group('TDParse.messageButtonRows', () {
@@ -227,8 +308,8 @@ void main() {
 
       expect(controller.enabled, isFalse);
       expect(controller.autoTranslate, isFalse);
-      expect(controller.provider, TranslationProvider.myMemory);
-      expect(controller.targetLanguageCode, 'auto');
+      expect(controller.provider, TranslationProvider.nativeOnDevice);
+      expect(controller.targetLanguageCode, 'zh-Hans');
       expect(controller.noTranslateLanguageCodes, isEmpty);
       expect(
         controller.lingvaEndpoint,
@@ -238,7 +319,7 @@ void main() {
 
       controller.enabled = true;
       controller.autoTranslate = true;
-      controller.provider = TranslationProvider.myMemory;
+      controller.provider = TranslationProvider.nativeOnDevice;
       controller.targetLanguageCode = 'ja';
       controller.setNoTranslateLanguage('en', true);
       controller.lingvaEndpoint = 'https://lingva.example.com/';
@@ -247,7 +328,7 @@ void main() {
       final reloaded = TranslationController(prefs);
       expect(reloaded.enabled, isTrue);
       expect(reloaded.autoTranslate, isTrue);
-      expect(reloaded.provider, TranslationProvider.myMemory);
+      expect(reloaded.provider, TranslationProvider.nativeOnDevice);
       expect(reloaded.targetLanguageCode, 'ja');
       expect(reloaded.noTranslateLanguageCodes, contains('en'));
       expect(reloaded.lingvaEndpoint, 'https://lingva.example.com');
@@ -255,7 +336,7 @@ void main() {
     });
 
     test(
-      'forces MyMemory provider regardless of stale stored provider',
+      'forces native provider regardless of stale stored provider',
       () async {
         SharedPreferences.setMockInitialValues({
           'translation.provider': 'tdlib',
@@ -263,9 +344,9 @@ void main() {
         final prefs = await SharedPreferences.getInstance();
         final controller = TranslationController(prefs);
 
-        expect(controller.provider, TranslationProvider.myMemory);
+        expect(controller.provider, TranslationProvider.nativeOnDevice);
         controller.provider = TranslationProvider.lingva;
-        expect(controller.provider, TranslationProvider.myMemory);
+        expect(controller.provider, TranslationProvider.nativeOnDevice);
       },
     );
   });

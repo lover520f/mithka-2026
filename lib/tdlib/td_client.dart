@@ -22,6 +22,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -51,6 +52,7 @@ class TdClient {
   late final TdBindings _bindings = TdBindings.open();
 
   bool _isRunning = false;
+  Timer? _debugReceiveTimer;
 
   // Request/response correlation, keyed by the "@extra" we attach.
   final Map<String, Completer<Map<String, dynamic>>> _pending = {};
@@ -73,6 +75,7 @@ class TdClient {
 
   static const _slotsKey = 'drachma.accountSlots';
   static const _activeKey = 'drachma.activeSlot';
+  static const _liveClientIdsKey = 'drachma.debugLiveClientIds';
 
   int get activeSlot => _activeSlot;
   List<int> get configuredSlots => List.unmodifiable(_slots);
@@ -94,6 +97,7 @@ class TdClient {
 
     _prefs = await SharedPreferences.getInstance();
     _supportDir = (await getApplicationSupportDirectory()).path;
+    if (kDebugMode) await _closeStaleDebugClients();
 
     final stored =
         _prefs.getStringList(_slotsKey)?.map(int.parse).toList() ?? <int>[];
@@ -111,6 +115,7 @@ class TdClient {
       _slotForClient[cid] = slot;
     }
     _activeClientId = _clientForSlot[active] ?? 0;
+    if (kDebugMode) unawaited(_persistDebugLiveClientIds());
 
     // The first request "activates" each client; TDLib then emits its
     // updateAuthorizationState(authorizationStateWaitTdlibParameters).
@@ -121,19 +126,20 @@ class TdClient {
       );
     }
 
-    // Spawn the dedicated receive isolate.
-    final fromIsolate = ReceivePort();
-    await Isolate.spawn(
-      _receiveEntry,
-      fromIsolate.sendPort,
-      debugName: 'TDLibReceive',
-    );
-    fromIsolate.listen((message) {
-      if (message is String) {
-        final object = jsonDecode(message);
-        if (object is Map<String, dynamic>) _route(object);
-      }
-    });
+    if (kDebugMode) {
+      _startDebugReceivePump();
+    } else {
+      // Spawn the dedicated receive isolate.
+      final fromIsolate = ReceivePort();
+      await Isolate.spawn(
+        _receiveEntry,
+        fromIsolate.sendPort,
+        debugName: 'TDLibReceive',
+      );
+      fromIsolate.listen((message) {
+        if (message is String) _routeRaw(message);
+      });
+    }
   }
 
   // MARK: - Account management
@@ -148,6 +154,7 @@ class TdClient {
     _clientForSlot[newSlot] = cid;
     _slotForClient[cid] = newSlot;
     _persist();
+    if (kDebugMode) unawaited(_persistDebugLiveClientIds());
     _bindings.send(cid, jsonEncode({'@type': 'getOption', 'name': 'version'}));
     return newSlot;
   }
@@ -174,6 +181,7 @@ class TdClient {
     }
     _slots.remove(slot);
     _persist();
+    if (kDebugMode) unawaited(_persistDebugLiveClientIds());
   }
 
   void _persist() {
@@ -223,6 +231,43 @@ class TdClient {
     if (clientId == _activeClientId) _updates.add(object);
   }
 
+  void _routeRaw(String message) {
+    final object = jsonDecode(message);
+    if (object is Map<String, dynamic>) _route(object);
+  }
+
+  void _startDebugReceivePump() {
+    _debugReceiveTimer?.cancel();
+    _debugReceiveTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+      for (var i = 0; i < 100; i++) {
+        final event = _bindings.receive(0.0);
+        if (event == null) break;
+        _routeRaw(event);
+      }
+    });
+  }
+
+  Future<void> _closeStaleDebugClients() async {
+    final ids = _prefs
+        .getStringList(_liveClientIdsKey)
+        ?.map(int.tryParse)
+        .whereType<int>()
+        .toList();
+    if (ids == null || ids.isEmpty) return;
+    for (final id in ids) {
+      _bindings.send(id, jsonEncode({'@type': 'close'}));
+    }
+    await _prefs.remove(_liveClientIdsKey);
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  }
+
+  Future<void> _persistDebugLiveClientIds() {
+    return _prefs.setStringList(
+      _liveClientIdsKey,
+      _clientForSlot.values.map((id) => id.toString()).toList(),
+    );
+  }
+
   void _sendParameters(int clientId) {
     final slot = _slotForClient[clientId];
     if (slot == null) return;
@@ -249,6 +294,15 @@ class TdClient {
         'application_version': '1.0',
       }),
     );
+  }
+
+  /// Re-sends TDLib parameters for the active client. This is intentionally
+  /// idempotent for development hot restart, where Dart state restarts while
+  /// tdjson can still be waiting on the bootstrap request.
+  void sendParametersForActiveClient() {
+    final clientId = _activeClientId;
+    if (clientId == 0) return;
+    _sendParameters(clientId);
   }
 
   // MARK: - Sending

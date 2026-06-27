@@ -31,12 +31,15 @@ class ChatListViewModel extends ChangeNotifier {
   List<ChatFilterOption> _filters = const [ChatFilterOption(title: '全部')];
   ChatFilterOption _selectedFilter = const ChatFilterOption(title: '全部');
   String? notice;
+  bool _initialLoading = true;
+  Timer? _resortTimer;
 
   List<ChatSummary> get chats => _chats;
   List<ChatSummary> get archived => _archived;
   List<ChatFilterOption> get filters => _filters;
   ChatFilterOption get selectedFilter => _selectedFilter;
   bool get isAllFilter => _selectedFilter.isAll;
+  bool get isInitialLoading => _initialLoading && _chats.isEmpty;
 
   /// Authoritative store keyed by chat id; `chats` is a sorted projection.
   final Map<int, ChatSummary> _map = {};
@@ -53,21 +56,22 @@ class ChatListViewModel extends ChangeNotifier {
   final Set<String> _loadingChatLists = {};
   final Set<String> _exhaustedChatLists = {};
   static const _pageSize = 100;
-  static const _hydrateLimit = 1000;
+  static const _initialPageSize = 36;
+  static const _backgroundHydrateLimit = 240;
 
   void onAppear() {
     if (_listening) return;
     _listening = true;
     _subscribe();
     _loadFilters();
-    _loadChats(_pageSize);
-    _loadArchive(_pageSize);
-    _prefetchMainChats();
+    _loadChats(_initialPageSize);
+    _deferWarmCaches();
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    _resortTimer?.cancel();
     super.dispose();
   }
 
@@ -196,6 +200,15 @@ class ChatListViewModel extends ChangeNotifier {
     _loadAndHydrateChatList(_activeChatList, limit);
   }
 
+  void _deferWarmCaches() {
+    Future<void>.delayed(const Duration(milliseconds: 450), () {
+      _loadArchive(_pageSize);
+    });
+    Future<void>.delayed(const Duration(milliseconds: 900), () {
+      if (_selectedFilter.isAll) _prefetchMainChats();
+    });
+  }
+
   void _prefetchMainChats() {
     if (_prefetchingMain || _exhaustedChatLists.contains('main')) return;
     _prefetchingMain = true;
@@ -204,7 +217,9 @@ class ChatListViewModel extends ChangeNotifier {
         final loaded = await _loadChatList({
           '@type': 'chatListMain',
         }, _pageSize);
-        await _hydrateChatList({'@type': 'chatListMain'});
+        await _hydrateChatList({
+          '@type': 'chatListMain',
+        }, limit: _backgroundHydrateLimit);
         if (!loaded && !_loadingChatLists.contains('main')) break;
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
@@ -218,26 +233,44 @@ class ChatListViewModel extends ChangeNotifier {
 
   void loadMore() => _loadChats(_pageSize);
 
+  Future<void> refresh() async {
+    _exhaustedChatLists.remove(_chatListKey(_activeChatList));
+    _exhaustedChatLists.remove('archive');
+    _loadFilters();
+    await Future.wait([
+      _loadAndHydrateChatList(_activeChatList, _pageSize),
+      _loadAndHydrateChatList({'@type': 'chatListArchive'}, _pageSize),
+    ]);
+    if (_selectedFilter.isAll) _prefetchMainChats();
+    _resort();
+  }
+
   Future<void> _loadAndHydrateChatList(
     Map<String, dynamic> list,
     int limit,
   ) async {
     await _loadChatList(list, limit);
-    await _hydrateChatList(list);
+    await _hydrateChatList(list, limit: limit);
   }
 
-  Future<void> _hydrateChatList(Map<String, dynamic> list) async {
+  Future<void> _hydrateChatList(
+    Map<String, dynamic> list, {
+    required int limit,
+  }) async {
     try {
       final res = await _client.query({
         '@type': 'getChats',
         'chat_list': list,
-        'limit': _hydrateLimit,
+        'limit': limit,
       });
       final ids = res.int64Array('chat_ids') ?? const <int>[];
+      if (ids.isEmpty) _finishInitialLoadingIfNeeded(force: true);
       for (final id in ids) {
         _ensureChatLoaded(id);
       }
-    } catch (_) {}
+    } catch (_) {
+      _finishInitialLoadingIfNeeded(force: true);
+    }
   }
 
   // MARK: - Row actions (swipe)
@@ -545,7 +578,7 @@ class ChatListViewModel extends ChangeNotifier {
           _applyPositions(summary.id, raw.objects('positions'));
           _resolvePeerIfNeeded(summary);
           _resolveSenderIfNeeded(summary.id, raw.obj('last_message'));
-          _resort();
+          _scheduleResort();
         })
         .catchError((_) {});
   }
@@ -557,6 +590,8 @@ class ChatListViewModel extends ChangeNotifier {
   // MARK: - Sorting
 
   void _resort() {
+    _resortTimer?.cancel();
+    _resortTimer = null;
     final all = _map.values.toList();
     _archived = all.where((c) => c.archiveOrder > 0).toList()
       ..sort(
@@ -577,7 +612,19 @@ class ChatListViewModel extends ChangeNotifier {
           return b.id.compareTo(a.id);
         });
     }
+    _finishInitialLoadingIfNeeded();
     notifyListeners();
+  }
+
+  void _scheduleResort() {
+    if (_resortTimer != null) return;
+    _resortTimer = Timer(const Duration(milliseconds: 16), _resort);
+  }
+
+  void _finishInitialLoadingIfNeeded({bool force = false}) {
+    if (_initialLoading && (force || _map.isNotEmpty)) {
+      _initialLoading = false;
+    }
   }
 
   static int _compare(ChatSummary a, ChatSummary b) {

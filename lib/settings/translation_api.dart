@@ -8,7 +8,35 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import 'translation_controller.dart';
+
+class NativeTranslationApi {
+  const NativeTranslationApi._();
+
+  static const _channel = MethodChannel('mithka/native_translation');
+
+  static Future<String> translate({
+    required String text,
+    required String sourceLanguageCode,
+    required String targetLanguageCode,
+  }) async {
+    try {
+      final translated = await _channel.invokeMethod<String>('translate', {
+        'text': text,
+        'sourceLanguageCode': sourceLanguageCode,
+        'targetLanguageCode': targetLanguageCode,
+      });
+      if (translated == null || translated.isEmpty) {
+        throw TranslationApiException('本机翻译没有返回译文');
+      }
+      return translated;
+    } on PlatformException catch (e) {
+      throw TranslationApiException(e.message ?? e.code);
+    }
+  }
+}
 
 class ThirdPartyTranslationApi {
   const ThirdPartyTranslationApi._();
@@ -24,6 +52,9 @@ class ThirdPartyTranslationApi {
     final source = _sourceLanguage(sourceLanguageCode);
     final target = _apiLanguage(targetLanguageCode);
     return switch (provider) {
+      TranslationProvider.nativeOnDevice => throw TranslationApiException(
+        '本机翻译不走外部 API',
+      ),
       TranslationProvider.myMemory => _translateMyMemory(text, source, target),
       TranslationProvider.lingva => _translateLingva(
         text,

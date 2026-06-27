@@ -33,10 +33,12 @@ class ChatRowView extends StatelessWidget {
     super.key,
     required this.chat,
     this.archived = false,
+    this.selected = false,
     this.onClearUnread,
   });
   final ChatSummary chat;
   final bool archived;
+  final bool selected;
   final VoidCallback? onClearUnread;
 
   @override
@@ -53,7 +55,9 @@ class ChatRowView extends StatelessWidget {
         chat.peerEmojiStatusId != 0;
     return Container(
       height: rowHeight,
-      color: chat.isPinned ? c.pinnedRow : c.background,
+      color: selected
+          ? c.listHeaderTint
+          : (chat.isPinned ? c.pinnedRow : c.background),
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
       child: Row(
         children: [

@@ -44,10 +44,12 @@ Future<void> main() async {
           }
         : null,
   );
-  // Portrait only — no landscape.
+  // Let iPhone and iPad follow every physical orientation.
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
   ]);
   await Firebase.initializeApp();
   final appVersion = await AppVersion.load();

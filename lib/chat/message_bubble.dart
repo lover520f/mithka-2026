@@ -61,6 +61,7 @@ class MessageBubble extends StatefulWidget {
     this.onOpenSticker,
     this.onPlayVideo,
     this.onButtonTap,
+    this.onBotCommandTap,
     this.onToggleReaction,
     this.onRedial,
     this.isRead = false,
@@ -83,6 +84,7 @@ class MessageBubble extends StatefulWidget {
   final ValueChanged<ChatMessage>? onOpenSticker;
   final ValueChanged<ChatMessage>? onPlayVideo;
   final void Function(ChatMessage message, MessageButton button)? onButtonTap;
+  final ValueChanged<String>? onBotCommandTap;
   final ValueChanged<MessageReaction>? onToggleReaction;
   final ValueChanged<bool>?
   onRedial; // tap a call log to redial (bool = isVideo)
@@ -765,7 +767,7 @@ class _MessageBubbleState extends State<MessageBubble>
           style: TextStyle(
             fontSize: 15,
             height: 1.2,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
             color: base,
           ),
         ),
@@ -1669,6 +1671,12 @@ class _MessageBubbleState extends State<MessageBubble>
       return [TextSpan(text: segment, style: style, recognizer: recognizer)];
     }
     final target = _entityTapTarget(segment, effectiveActive);
+    if (target == '__bot_command__') {
+      final recognizer = TapGestureRecognizer()
+        ..onTap = () => widget.onBotCommandTap?.call(segment.trim());
+      _linkRecognizers.add(recognizer);
+      return [TextSpan(text: segment, style: style, recognizer: recognizer)];
+    }
     if (target != null) {
       final recognizer = TapGestureRecognizer()
         ..onTap = () => openLink(context, target);
@@ -1702,11 +1710,12 @@ class _MessageBubbleState extends State<MessageBubble>
     FontStyle? fontStyle;
     Color? backgroundColor;
     var useCodeFont = false;
+    var fontFeatures = const <FontFeature>[];
     final decorations = <TextDecoration>[];
     for (final e in active) {
       switch (e.type) {
         case 'textEntityTypeBold':
-          weight = FontWeight.w700;
+          weight = FontWeight.w600;
         case 'textEntityTypeItalic':
           fontStyle = FontStyle.italic;
         case 'textEntityTypeUnderline':
@@ -1737,6 +1746,14 @@ class _MessageBubbleState extends State<MessageBubble>
         case 'textEntityTypeMediaTimestamp':
           color = link;
           weight = FontWeight.w600;
+        case 'textEntityTypeMarked':
+          backgroundColor = Colors.amber.withValues(alpha: 0.32);
+        case 'textEntityTypeSubscript':
+          fontFeatures = const [FontFeature.subscripts()];
+        case 'textEntityTypeSuperscript':
+          fontFeatures = const [FontFeature.superscripts()];
+        case 'textEntityTypeDateTime':
+          color = link;
       }
     }
     final style = TextStyle(
@@ -1748,6 +1765,7 @@ class _MessageBubbleState extends State<MessageBubble>
           ? null
           : TextDecoration.combine(decorations),
       decorationColor: color,
+      fontFeatures: fontFeatures.isEmpty ? null : fontFeatures,
     );
     return useCodeFont
         ? context.watch<ThemeController>().codeTextStyle(style)
@@ -1768,7 +1786,9 @@ class _MessageBubbleState extends State<MessageBubble>
         case 'textEntityTypeHashtag':
         case 'textEntityTypeCashtag':
         case 'textEntityTypeBotCommand':
-          return null;
+          return e.type == 'textEntityTypeBotCommand'
+              ? '__bot_command__'
+              : null;
         case 'textEntityTypeEmailAddress':
           return 'mailto:$segment';
         case 'textEntityTypePhoneNumber':

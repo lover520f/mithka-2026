@@ -89,16 +89,9 @@ class AppearanceView extends StatelessWidget {
                   _toggleRow(
                     context,
                     Icons.photo_library_outlined,
-                    '合并连续图片消息',
+                    '合并图片消息',
                     theme.groupImageMessages,
                     (v) => theme.groupImageMessages = v,
-                  ),
-                  _toggleRow(
-                    context,
-                    Icons.circle_outlined,
-                    '显示底部动态',
-                    theme.showMomentsTab,
-                    (v) => theme.showMomentsTab = v,
                   ),
                   _toggleRow(
                     context,

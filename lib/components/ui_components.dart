@@ -8,6 +8,7 @@
 
 import 'dart:math' as math;
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -374,6 +375,154 @@ class InsetDivider extends StatelessWidget {
     padding: EdgeInsets.only(left: leadingInset),
     child: Container(height: AppMetric.divider, color: context.colors.divider),
   );
+}
+
+/// Standard grouped settings card. Use this for left-label/right-value rows
+/// instead of duplicating per-screen private `_settingsCard` variants.
+class SettingsCard extends StatelessWidget {
+  const SettingsCard({super.key, required this.children, this.margin});
+
+  final List<Widget> children;
+  final EdgeInsetsGeometry? margin;
+
+  @override
+  Widget build(BuildContext context) {
+    final card = Container(
+      decoration: BoxDecoration(
+        color: context.colors.card,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+    );
+    return margin == null ? card : Padding(padding: margin!, child: card);
+  }
+}
+
+class SettingsRow extends StatelessWidget {
+  const SettingsRow({
+    super.key,
+    required this.title,
+    this.value = '',
+    this.leading,
+    this.onTap,
+    this.showChevron = true,
+    this.height = 56,
+    this.leadingInset = 16,
+    this.trailing,
+  });
+
+  final String title;
+  final String value;
+  final Widget? leading;
+  final VoidCallback? onTap;
+  final bool showChevron;
+  final double height;
+  final double leadingInset;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: SizedBox(
+        height: height,
+        child: Padding(
+          padding: EdgeInsets.only(left: leadingInset, right: 14),
+          child: Row(
+            children: [
+              if (leading != null) ...[leading!, const SizedBox(width: 12)],
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: AppTextSize.body,
+                  color: c.textPrimary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child:
+                      trailing ??
+                      Text(
+                        value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          fontSize: AppTextSize.footnote,
+                          color: c.textTertiary,
+                        ),
+                      ),
+                ),
+              ),
+              if (showChevron) ...[
+                const SizedBox(width: 8),
+                Icon(sfIcon('chevron.right'), size: 17, color: c.textTertiary),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class SettingsSwitchRow extends StatelessWidget {
+  const SettingsSwitchRow({
+    super.key,
+    required this.title,
+    required this.value,
+    required this.onChanged,
+    this.leading,
+    this.height = 56,
+    this.leadingInset = 16,
+  });
+
+  final String title;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final Widget? leading;
+  final double height;
+  final double leadingInset;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onChanged(!value),
+      child: SizedBox(
+        height: height,
+        child: Padding(
+          padding: EdgeInsets.only(left: leadingInset, right: 14),
+          child: Row(
+            children: [
+              if (leading != null) ...[leading!, const SizedBox(width: 12)],
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: AppTextSize.body,
+                  color: c.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              IgnorePointer(
+                child: CupertinoSwitch(
+                  value: value,
+                  activeTrackColor: AppTheme.brand,
+                  onChanged: onChanged,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Centered gray timestamp separator in a conversation.

@@ -6,6 +6,8 @@
 //  机器人 lists bot users. Port of the Swift `ContactsView` / `ContactsViewModel`.
 //
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -183,7 +185,7 @@ class _ContactsViewState extends State<ContactsView> {
                         style: TextStyle(
                           fontSize: 15,
                           fontWeight: _tab == i
-                              ? FontWeight.w700
+                              ? FontWeight.w600
                               : FontWeight.w500,
                           color: c.textPrimary,
                         ),
@@ -338,6 +340,8 @@ class ContactsViewModel extends ChangeNotifier {
   final Set<int> _resolvingBots = {};
   final Set<String> _loadingChatLists = {};
   final Set<String> _exhaustedChatLists = {};
+  StreamSubscription<Map<String, dynamic>>? _subscription;
+  bool _disposed = false;
   static const _pageSize = 100;
 
   void onAppear() {
@@ -351,14 +355,17 @@ class ContactsViewModel extends ChangeNotifier {
   Future<void> _loadContacts() async {
     try {
       final result = await TdClient.shared.query({'@type': 'getContacts'});
+      if (_disposed) return;
       final ids = result.int64Array('user_ids') ?? const <int>[];
       final loaded = <Contact>[];
       for (final id in ids.take(300)) {
+        if (_disposed) return;
         try {
           final user = await TdClient.shared.query({
             '@type': 'getUser',
             'user_id': id,
           });
+          if (_disposed) return;
           final contact = _contactFromUser(id, user);
           if (_isBotUser(user)) {
             _botIndex[id] = contact;
@@ -372,7 +379,7 @@ class ContactsViewModel extends ChangeNotifier {
       );
       contacts = loaded;
       _sortBots();
-      notifyListeners();
+      _safeNotify();
     } catch (_) {}
   }
 
@@ -415,18 +422,22 @@ class ContactsViewModel extends ChangeNotifier {
 
   void _prefetchMainChats() {
     Future<void>(() async {
-      while (!_exhaustedChatLists.contains('chatListMain')) {
+      while (!_disposed && !_exhaustedChatLists.contains('chatListMain')) {
         final loaded = await _loadChatList({
           '@type': 'chatListMain',
         }, _pageSize);
-        if (!loaded && !_loadingChatLists.contains('chatListMain')) break;
+        if (_disposed ||
+            (!loaded && !_loadingChatLists.contains('chatListMain'))) {
+          break;
+        }
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
     });
   }
 
   void _subscribe() {
-    TdClient.shared.subscribe().listen((update) {
+    _subscription = TdClient.shared.subscribe().listen((update) {
+      if (_disposed) return;
       switch (update.type) {
         case 'updateNewChat':
           final chat = update.obj('chat');
@@ -476,10 +487,11 @@ class ContactsViewModel extends ChangeNotifier {
       ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
     channels = _channelIndex.values.toList()
       ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
-    notifyListeners();
+    _safeNotify();
   }
 
   void _resolveBot(int userId) {
+    if (_disposed) return;
     if (_botIndex.containsKey(userId) || _resolvingBots.contains(userId)) {
       return;
     }
@@ -487,13 +499,15 @@ class ContactsViewModel extends ChangeNotifier {
     TdClient.shared
         .query({'@type': 'getUser', 'user_id': userId})
         .then((user) {
+          if (_disposed) return;
           _resolvingBots.remove(userId);
           if (!_isBotUser(user)) return;
           _botIndex[userId] = _contactFromUser(userId, user);
           _sortBots();
-          notifyListeners();
+          _safeNotify();
         })
         .catchError((_) {
+          if (_disposed) return;
           _resolvingBots.remove(userId);
         });
   }
@@ -501,5 +515,16 @@ class ContactsViewModel extends ChangeNotifier {
   void _sortBots() {
     bots = _botIndex.values.toList()
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  }
+
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _subscription?.cancel();
+    super.dispose();
   }
 }

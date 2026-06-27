@@ -7,11 +7,16 @@
 //  the Swift `MainTabView`.
 //
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../call/call_manager.dart';
 import '../call/call_screen.dart';
+import '../chat/chat_view.dart';
+import '../channels/topic_chat_view.dart';
+import '../channels/topic_channels_view.dart';
 import '../chats/chat_list_view.dart';
 import '../components/drawer_controller.dart' as dc;
 import '../components/sf_symbols.dart';
@@ -67,6 +72,7 @@ class _MainTabViewState extends State<MainTabView> {
   late final UnreadBadgeModel _unread = UnreadBadgeModel()..start();
   late final CallManager _calls = CallManager()..start();
   late final ChatListController _chatListController = ChatListController();
+  ChatListSelection? _selectedMessageChat;
 
   @override
   void initState() {
@@ -85,29 +91,38 @@ class _MainTabViewState extends State<MainTabView> {
   }
 
   late final List<GlobalKey<NavigatorState>> _navKeys = List.generate(
-    3,
+    4,
     (_) => GlobalKey<NavigatorState>(),
   );
 
   static const _allTabs = [
     _MainTabItem(0, '消息', 'message.fill'),
-    _MainTabItem(1, '联系人', 'person.2.fill'),
-    _MainTabItem(2, '动态', 'circle.dashed'),
+    _MainTabItem(1, '频道', 'number.circle.fill'),
+    _MainTabItem(2, '联系人', 'person.2.fill'),
+    _MainTabItem(3, '动态', 'circle.dashed'),
   ];
 
   List<_MainTabItem> _visibleTabs(ThemeController theme) => [
     _allTabs[0],
-    _allTabs[1],
-    if (theme.showMomentsTab) _allTabs[2],
+    if (theme.showChannelsTab) _allTabs[1],
+    _allTabs[2],
+    if (theme.showMomentsTab) _allTabs[3],
   ];
 
   Widget _root(int i) => switch (i) {
     0 => ChatListView(controller: _chatListController),
-    1 => const ContactsView(),
+    1 => const TopicChannelsView(),
+    2 => const ContactsView(),
     _ => const MomentsView(),
   };
 
   Future<bool> _onWillPop() async {
+    if (_selection == 0 &&
+        _usesMessageSplit(context) &&
+        _selectedMessageChat != null) {
+      setState(() => _selectedMessageChat = null);
+      return false;
+    }
     final nav = _navKeys[_selection].currentState;
     if (nav != null && nav.canPop()) {
       nav.pop();
@@ -186,9 +201,10 @@ class _MainTabViewState extends State<MainTabView> {
     return index < 0 ? tabs.length - 1 : index;
   }
 
-  Widget _stack(List<_MainTabItem> tabs) => IndexedStack(
-    index: _visibleSelection(tabs),
-    children: [for (final tab in tabs) _tabNavigator(tab.index)],
+  Widget _stack(List<_MainTabItem> tabs) => _LazyTabStack(
+    selection: _visibleSelection(tabs),
+    items: tabs,
+    builder: (tab) => _tabNavigator(tab.index),
   );
 
   // MARK: - Classic (flat) tab bar
@@ -203,6 +219,9 @@ class _MainTabViewState extends State<MainTabView> {
     }
     final selection = _visibleSelection(tabs);
     final activeTabIndex = tabs[selection].index;
+    if (activeTabIndex == 0 && _usesMessageSplit(context)) {
+      return _messageSplitTabs(tabs, selection);
+    }
     return Column(
       children: [
         Expanded(child: _stack(tabs)),
@@ -230,12 +249,70 @@ class _MainTabViewState extends State<MainTabView> {
     );
   }
 
+  Widget _messageSplitTabs(List<_MainTabItem> tabs, int selection) {
+    final theme = context.watch<ThemeController>();
+    final size = MediaQuery.of(context).size;
+    final sidebarWidth = (size.width * 0.32).clamp(320.0, 420.0).toDouble();
+    return Row(
+      children: [
+        SizedBox(
+          width: sidebarWidth,
+          child: Column(
+            children: [
+              Expanded(
+                child: ChatListView(
+                  controller: _chatListController,
+                  selectedChatId: _selectedMessageChat?.chatId,
+                  onChatSelected: (chat) {
+                    setState(() => _selectedMessageChat = chat);
+                  },
+                ),
+              ),
+              AnimatedBuilder(
+                animation: _unread,
+                builder: (context, _) => _ClassicTabBar(
+                  selection: selection,
+                  onSelect: _select,
+                  items: tabs,
+                  onClearUnread: _chatListController.markAllRead,
+                  unread: _unread.countFor(theme.unreadBadgeMode),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(child: _messageDetailPane()),
+      ],
+    );
+  }
+
+  Widget _messageDetailPane() {
+    final selected = _selectedMessageChat;
+    if (selected == null) return const _MessageEmptyPane();
+    final chat = selected.chat;
+    return KeyedSubtree(
+      key: ValueKey('message-detail-${selected.chatId}-${selected.isForum}'),
+      child: selected.isForum && chat != null
+          ? TopicChatView(chat: chat, showBackButton: false)
+          : ChatView(
+              chatId: selected.chatId,
+              title: selected.title,
+              showBackButton: false,
+            ),
+    );
+  }
+
+  bool _usesMessageSplit(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    return size.width > size.height && math.min(size.width, size.height) >= 600;
+  }
+
   // MARK: - Drawer overlay (the "我" profile drawer)
 
   Widget _drawerOverlay() {
     return Consumer<dc.DrawerController>(
       builder: (context, drawer, _) {
-        final width = MediaQuery.of(context).size.width * 0.88;
+        final width = math.min(MediaQuery.of(context).size.width * 0.88, 420.0);
         return IgnorePointer(
           ignoring: !drawer.isOpen,
           child: Stack(
@@ -269,12 +346,100 @@ class _MainTabViewState extends State<MainTabView> {
   }
 }
 
+class _MessageEmptyPane extends StatelessWidget {
+  const _MessageEmptyPane();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return ColoredBox(
+      color: c.groupedBackground,
+      child: Center(
+        child: Opacity(
+          opacity: 0.08,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset('assets/penguin.png', width: 92, height: 92),
+              const SizedBox(width: 18),
+              Text(
+                'Mithka',
+                style: TextStyle(
+                  fontSize: 64,
+                  fontWeight: FontWeight.w600,
+                  color: c.textTertiary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MainTabItem {
   const _MainTabItem(this.index, this.label, this.icon);
 
   final int index;
   final String label;
   final String icon;
+}
+
+class _LazyTabStack extends StatefulWidget {
+  const _LazyTabStack({
+    required this.selection,
+    required this.items,
+    required this.builder,
+  });
+
+  final int selection;
+  final List<_MainTabItem> items;
+  final Widget Function(_MainTabItem tab) builder;
+
+  @override
+  State<_LazyTabStack> createState() => _LazyTabStackState();
+}
+
+class _LazyTabStackState extends State<_LazyTabStack> {
+  final Set<int> _builtTabIndexes = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _rememberSelection();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LazyTabStack oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _builtTabIndexes.removeWhere(
+      (index) => !widget.items.any((tab) => tab.index == index),
+    );
+    _rememberSelection();
+  }
+
+  void _rememberSelection() {
+    if (widget.items.isEmpty) return;
+    final selectedIndex = widget.selection
+        .clamp(0, widget.items.length - 1)
+        .toInt();
+    final selected = widget.items[selectedIndex];
+    _builtTabIndexes.add(selected.index);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IndexedStack(
+      index: widget.selection,
+      children: [
+        for (final tab in widget.items)
+          _builtTabIndexes.contains(tab.index)
+              ? widget.builder(tab)
+              : const SizedBox.expand(),
+      ],
+    );
+  }
 }
 
 /// Hosts one tab's navigation stack so pushes stay within the tab.
@@ -352,7 +517,7 @@ class _ClassicTabBar extends StatelessWidget {
                               ),
                               if (i == 0 && unread > 0)
                                 Positioned(
-                                  right: 0,
+                                  right: -10,
                                   top: 0,
                                   child: UnreadBadge(
                                     count: unread,

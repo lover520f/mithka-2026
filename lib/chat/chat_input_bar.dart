@@ -13,6 +13,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../components/confirm_dialog.dart';
 import '../components/toast.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:geolocator/geolocator.dart';
@@ -263,8 +264,17 @@ class _ChatInputBarState extends State<ChatInputBar> {
     showToast(context, '无法打开$what');
   }
 
-  void _sendCurrentText() {
+  Future<void> _sendCurrentText() async {
     if (_controller.text.trim().isEmpty) return;
+    if (vm.requiresPaidMessage) {
+      final ok = await confirmDialog(
+        context,
+        title: '发送付费消息？',
+        message: '发送这条消息需要 ${vm.paidMessageStarCount} 星。',
+        confirmText: '发送',
+      );
+      if (!mounted || !ok) return;
+    }
     final (text, entities) = _controller.toFormatted();
     vm.sendFormatted(text, entities);
     _controller.clear();
@@ -625,7 +635,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
                           _SendComposerIntent:
                               CallbackAction<_SendComposerIntent>(
                                 onInvoke: (_) {
-                                  _sendCurrentText();
+                                  unawaited(_sendCurrentText());
                                   return null;
                                 },
                               ),
@@ -637,7 +647,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
                           maxLines: 4,
                           keyboardType: TextInputType.multiline,
                           textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => _sendCurrentText(),
+                          onSubmitted: (_) => unawaited(_sendCurrentText()),
                           style: TextStyle(fontSize: 16, color: c.textPrimary),
                           contentInsertionConfiguration:
                               ContentInsertionConfiguration(
@@ -669,8 +679,8 @@ class _ChatInputBarState extends State<ChatInputBar> {
                                   buttonItems: items,
                                 );
                               },
-                          decoration: const InputDecoration(
-                            hintText: '发送消息…',
+                          decoration: InputDecoration(
+                            hintText: vm.inputPlaceholder,
                             border: InputBorder.none,
                             isCollapsed: true,
                           ),
@@ -685,20 +695,41 @@ class _ChatInputBarState extends State<ChatInputBar> {
           if (hasText) ...[
             const SizedBox(width: 8),
             GestureDetector(
-              onTap: _sendCurrentText,
+              onTap: () => unawaited(_sendCurrentText()),
               child: Container(
-                width: 36,
+                width: vm.requiresPaidMessage ? 58 : 36,
                 height: 36,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   color: AppTheme.brand,
                   shape: BoxShape.circle,
                 ),
-                child: Icon(
-                  sfIcon('paperplane.fill'),
-                  size: 17,
-                  color: Colors.white,
-                ),
+                child: vm.requiresPaidMessage
+                    ? Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            sfIcon('star.fill'),
+                            size: 14,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'x${vm.paidMessageStarCount}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      )
+                    : Icon(
+                        sfIcon('paperplane.fill'),
+                        size: 17,
+                        color: Colors.white,
+                      ),
               ),
             ),
           ],

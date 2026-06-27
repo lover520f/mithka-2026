@@ -537,7 +537,7 @@ class _ProfileDetailViewState extends State<ProfileDetailView> {
 
   Widget _nameLine() {
     final c = context.colors;
-    final usePremiumWeight = _isPremium ? FontWeight.w700 : FontWeight.w600;
+    final usePremiumWeight = _isPremium ? FontWeight.w600 : FontWeight.w600;
     return Row(
       children: [
         Expanded(

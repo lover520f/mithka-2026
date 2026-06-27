@@ -17,6 +17,7 @@ import '../theme/app_theme.dart';
 import 'about_view.dart';
 import 'appearance_view.dart';
 import 'edit_profile_view.dart';
+import 'feature_settings_view.dart';
 import 'general_settings_view.dart';
 import 'notification_settings_view.dart';
 import 'privacy_security_view.dart';
@@ -73,6 +74,14 @@ class SettingsView extends StatelessWidget {
                     '通用',
                     const Color(0xFF8E8E93),
                     () => const GeneralSettingsView(),
+                  ),
+                  const InsetDivider(leadingInset: 56),
+                  _navRow(
+                    context,
+                    'square.grid.2x2.fill',
+                    '功能',
+                    const Color(0xFF3C8CF0),
+                    () => const FeatureSettingsView(),
                   ),
                   const InsetDivider(leadingInset: 56),
                   _navRow(

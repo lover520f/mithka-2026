@@ -377,7 +377,7 @@ class _ImageEditViewState extends State<ImageEditView> {
         style: TextStyle(
           color: Colors.white,
           fontSize: label.size,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           shadows: const [
             Shadow(color: Colors.black, blurRadius: 3, offset: Offset(0, 1)),
           ],
@@ -785,7 +785,7 @@ class _ImageEditPainter extends CustomPainter {
         style: TextStyle(
           color: Colors.white,
           fontSize: screenSize,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           shadows: const [
             Shadow(color: Colors.black, blurRadius: 3, offset: Offset(0, 1)),
           ],

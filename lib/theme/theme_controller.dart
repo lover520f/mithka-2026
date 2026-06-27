@@ -731,7 +731,8 @@ class ThemeController extends ChangeNotifier {
     _showMessageMetaIndicators =
         _prefs.getBool(_messageMetaIndicatorsKey) ?? false;
     _openChatsAtLatest = _prefs.getBool(_openChatsAtLatestKey) ?? false;
-    _groupImageMessages = _prefs.getBool(_groupImageMessagesKey) ?? false;
+    _groupImageMessages = _prefs.getBool(_groupImageMessagesKey) ?? true;
+    _showChannelsTab = _prefs.getBool(_showChannelsTabKey) ?? false;
     _showMomentsTab = _prefs.getBool(_showMomentsTabKey) ?? true;
     _unreadBadgeMode = UnreadBadgeMode.values.firstWhere(
       (m) => m.name == _prefs.getString(_unreadBadgeModeKey),
@@ -766,6 +767,7 @@ class ThemeController extends ChangeNotifier {
   static const _messageMetaIndicatorsKey = 'showMessageMetaIndicators';
   static const _openChatsAtLatestKey = 'openChatsAtLatest';
   static const _groupImageMessagesKey = 'groupImageMessages';
+  static const _showChannelsTabKey = 'showChannelsTab';
   static const _showMomentsTabKey = 'showMomentsTab';
   static const _unreadBadgeModeKey = 'unreadBadgeMode';
   static const _unreadBadgeOverflowModeKey = 'unreadBadgeOverflowMode';
@@ -797,7 +799,8 @@ class ThemeController extends ChangeNotifier {
   bool _showChatPremiumEmojiStatus = true;
   bool _showMessageMetaIndicators = false;
   bool _openChatsAtLatest = false;
-  bool _groupImageMessages = false;
+  bool _groupImageMessages = true;
+  bool _showChannelsTab = false;
   bool _showMomentsTab = true;
   late UnreadBadgeMode _unreadBadgeMode;
   late UnreadBadgeOverflowMode _unreadBadgeOverflowMode;
@@ -835,6 +838,7 @@ class ThemeController extends ChangeNotifier {
   bool get showMessageMetaIndicators => _showMessageMetaIndicators;
   bool get openChatsAtLatest => _openChatsAtLatest;
   bool get groupImageMessages => _groupImageMessages;
+  bool get showChannelsTab => _showChannelsTab;
   bool get showMomentsTab => _showMomentsTab;
   UnreadBadgeMode get unreadBadgeMode => _unreadBadgeMode;
   UnreadBadgeOverflowMode get unreadBadgeOverflowMode =>
@@ -982,6 +986,12 @@ class ThemeController extends ChangeNotifier {
   set groupImageMessages(bool value) {
     _groupImageMessages = value;
     _prefs.setBool(_groupImageMessagesKey, value);
+    notifyListeners();
+  }
+
+  set showChannelsTab(bool value) {
+    _showChannelsTab = value;
+    _prefs.setBool(_showChannelsTabKey, value);
     notifyListeners();
   }
 

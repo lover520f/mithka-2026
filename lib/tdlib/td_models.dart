@@ -143,6 +143,70 @@ class MessageTextEntity {
       type == 'textEntityTypePre' || type == 'textEntityTypePreCode';
 }
 
+class _ParsedMarkdownText {
+  const _ParsedMarkdownText(this.text, this.entities);
+
+  final String text;
+  final List<MessageTextEntity> entities;
+}
+
+class _MarkdownMarker {
+  const _MarkdownMarker(this.marker, this.type);
+
+  final String marker;
+  final String type;
+}
+
+class _RichTextBuilder {
+  final buffer = StringBuffer();
+  final entities = <MessageTextEntity>[];
+
+  int get length => buffer.length;
+  bool get isEmpty => buffer.isEmpty;
+
+  void write(String text) => buffer.write(text);
+
+  void blankLine() {
+    if (buffer.isEmpty) return;
+    final text = buffer.toString();
+    if (text.endsWith('\n\n')) return;
+    if (text.endsWith('\n')) {
+      buffer.write('\n');
+    } else {
+      buffer.write('\n\n');
+    }
+  }
+
+  void lineBreak() {
+    if (buffer.isNotEmpty && !buffer.toString().endsWith('\n')) {
+      buffer.write('\n');
+    }
+  }
+
+  void entity(
+    int start,
+    String type, {
+    String? url,
+    int? userId,
+    int? customEmojiId,
+    String? language,
+  }) {
+    final length = this.length - start;
+    if (length <= 0) return;
+    entities.add(
+      MessageTextEntity(
+        offset: start,
+        length: length,
+        type: type,
+        url: url,
+        userId: userId,
+        customEmojiId: customEmojiId,
+        language: language,
+      ),
+    );
+  }
+}
+
 /// One reaction bucket on a message (emoji or custom-emoji + count + chosen).
 class MessageReaction {
   const MessageReaction({
@@ -190,6 +254,7 @@ class ChatSummary {
     this.peerIsPremium = false,
     this.peerAccentColorId = -1,
     this.peerEmojiStatusId = 0,
+    this.isForum = false,
   });
 
   final int id;
@@ -212,6 +277,7 @@ class ChatSummary {
   bool peerIsPremium;
   int peerAccentColorId;
   int peerEmojiStatusId;
+  bool isForum;
 
   /// Groups & channels use a rounded-square avatar unless UI preferences
   /// override them; people use a circle.
@@ -268,6 +334,9 @@ class ChatMessage {
     this.isTranslating = false,
     this.buttonRows = const [],
     this.isEdited = false,
+    this.hasCommentThread = false,
+    this.commentCount = 0,
+    this.lastCommentMessageId,
   });
 
   final int id;
@@ -329,6 +398,10 @@ class ChatMessage {
   List<List<MessageButton>> buttonRows;
 
   bool isEdited; // shows a "已编辑" tag
+  bool hasCommentThread;
+  int
+  commentCount; // channel discussion replies/comments, when TDLib exposes it
+  int? lastCommentMessageId;
   List<MessageReaction> reactions = const [];
   String? forwardOrigin; // name of the original author when forwarded
   int? forwardFromUserId; // origin user, resolved lazily to forwardOrigin
@@ -578,6 +651,7 @@ abstract final class TDParse {
         'chatTypePrivate' || 'chatTypeSecret' => type?.int64('user_id'),
         _ => null,
       },
+      isForum: chat.boolean('view_as_topics') ?? false,
     );
   }
 
@@ -640,17 +714,18 @@ abstract final class TDParse {
         ? replyTo?.int64('message_id')
         : null;
 
-    // Inline custom emoji come from the formattedText that produced `text`.
-    final ft = content?.type == 'messageText'
-        ? content?.obj('text')
-        : (content?.type == 'messagePhoto' || content?.type == 'messageVideo')
-        ? content?.obj('caption')
+    final parsedEntities = messageTextEntities(content);
+    final markdown = !service && parsedEntities.isEmpty
+        ? _markdownText(text)
         : null;
+    final displayText = markdown?.text ?? text;
+    final displayEntities = markdown?.entities ?? parsedEntities;
+    final replyInfo = message.obj('interaction_info')?.obj('reply_info');
 
     return ChatMessage(
         id: id,
         isOutgoing: outgoing,
-        text: text,
+        text: displayText,
         date: date,
         isService: service,
         isCall: isCall,
@@ -659,7 +734,9 @@ abstract final class TDParse {
         callDuration: callDuration,
         contentType: content?.type,
         senderId: senderId,
-        senderTitle: _cleanString(message.str('sender_tag')),
+        senderTitle:
+            _cleanString(message.str('sender_tag')) ??
+            _cleanString(message.str('author_signature')),
         mediaAlbumId: message.int64('media_album_id') ?? 0,
         image: media.image,
         imageWidth: media.width,
@@ -677,11 +754,17 @@ abstract final class TDParse {
         voice: voiceAttachment(content),
         replyToMessageId: replyToMessageId,
         serviceUserIds: serviceUserIds(content, senderId),
-        customEmoji: customEmojiEntities(ft),
-        textEntities: textEntities(ft),
+        customEmoji: customEmojiEntitiesFrom(parsedEntities),
+        textEntities: displayEntities,
         linkPreview: linkPreview(content?.obj('link_preview')),
         buttonRows: messageButtonRows(message.obj('reply_markup')),
         isEdited: (message.integer('edit_date') ?? 0) > 0,
+        hasCommentThread: replyInfo != null,
+        commentCount:
+            replyInfo?.integer('reply_count') ??
+            replyInfo?.integer('comment_count') ??
+            0,
+        lastCommentMessageId: replyInfo?.int64('last_message_id'),
       )
       ..reactions = reactionsFrom(message)
       ..forwardOrigin = fwdName
@@ -905,10 +988,51 @@ abstract final class TDParse {
 
   /// Extracts textEntityTypeCustomEmoji spans from a formattedText object.
   static List<CustomEmojiEntity> customEmojiEntities(Map<String, dynamic>? ft) {
-    return textEntities(ft)
+    return customEmojiEntitiesFrom(textEntities(ft));
+  }
+
+  static List<CustomEmojiEntity> customEmojiEntitiesFrom(
+    List<MessageTextEntity> entities,
+  ) {
+    return entities
         .where((e) => e.customEmojiId != null)
         .map((e) => CustomEmojiEntity(e.offset, e.length, e.customEmojiId!))
         .toList();
+  }
+
+  static List<CustomEmojiEntity> customEmojiEntitiesForContent(
+    Map<String, dynamic>? content,
+  ) {
+    return customEmojiEntitiesFrom(messageTextEntities(content));
+  }
+
+  static Map<String, dynamic>? formattedTextForContent(
+    Map<String, dynamic>? content,
+  ) {
+    switch (content?.type) {
+      case 'messageText':
+        return content?.obj('text');
+      case 'messageAnimation':
+      case 'messageAudio':
+      case 'messageDocument':
+      case 'messagePaidMedia':
+      case 'messagePhoto':
+      case 'messageVideo':
+      case 'messageVoiceNote':
+        return content?.obj('caption');
+      default:
+        return null;
+    }
+  }
+
+  static List<MessageTextEntity> messageTextEntities(
+    Map<String, dynamic>? content,
+  ) {
+    if (content == null) return const [];
+    if (content.type == 'messageRichMessage') {
+      return _richMessageText(content.obj('message'))?.entities ?? const [];
+    }
+    return textEntities(formattedTextForContent(content));
   }
 
   static List<MessageTextEntity> textEntities(Map<String, dynamic>? ft) {
@@ -936,6 +1060,418 @@ abstract final class TDParse {
       );
     }
     return out;
+  }
+
+  static String richTextText(Map<String, dynamic>? value) {
+    return _richText(value).text;
+  }
+
+  static List<MessageTextEntity> richTextEntities(Map<String, dynamic>? value) {
+    return _richText(value).entities;
+  }
+
+  static _ParsedMarkdownText _richText(Object? value) {
+    final builder = _RichTextBuilder();
+    _appendRichText(builder, value);
+    return _ParsedMarkdownText(builder.buffer.toString(), builder.entities);
+  }
+
+  static void _appendRichText(_RichTextBuilder builder, Object? value) {
+    if (value == null) return;
+    if (value is String) {
+      builder.write(value);
+      return;
+    }
+    if (value is List) {
+      for (final item in value) {
+        _appendRichText(builder, item);
+      }
+      return;
+    }
+    if (value is! Map<String, dynamic>) return;
+
+    final type = value.type;
+    switch (type) {
+      case 'textEmpty':
+      case 'richTextAnchor':
+      case 'textAnchor':
+        return;
+      case 'richTextPlain':
+      case 'textPlain':
+        builder.write(value.str('text') ?? '');
+        return;
+      case 'richTexts':
+      case 'textConcat':
+        for (final item in value.objects('texts') ?? const []) {
+          _appendRichText(builder, item);
+        }
+        return;
+      case 'richTextCustomEmoji':
+        final alt = value.str('alternative_text') ?? '';
+        if (alt.isEmpty) return;
+        final start = builder.length;
+        builder.write(alt);
+        builder.entity(
+          start,
+          'textEntityTypeCustomEmoji',
+          customEmojiId: value.int64('custom_emoji_id'),
+        );
+        return;
+      case 'richTextIcon':
+      case 'textImage':
+        builder.write('[图片]');
+        return;
+      case 'richTextMathematicalExpression':
+        final expression = value.str('expression') ?? '';
+        final start = builder.length;
+        builder.write(expression);
+        builder.entity(start, 'textEntityTypeCode');
+        return;
+    }
+
+    final child = value['text'];
+    final start = builder.length;
+    if (child != null) {
+      _appendRichText(builder, child);
+    } else if (type == 'richTextEmailAddress') {
+      builder.write(value.str('email_address') ?? '');
+    } else if (type == 'richTextPhoneNumber') {
+      builder.write(value.str('phone_number') ?? '');
+    }
+    final entityType = _richTextEntityType(type);
+    if (entityType == null) return;
+    builder.entity(
+      start,
+      entityType,
+      url: _richTextEntityUrl(type, value),
+      userId: value.int64('user_id'),
+    );
+  }
+
+  static String? _richTextEntityType(String? type) {
+    switch (type) {
+      case 'richTextBold':
+      case 'textBold':
+        return 'textEntityTypeBold';
+      case 'richTextItalic':
+      case 'textItalic':
+        return 'textEntityTypeItalic';
+      case 'richTextUnderline':
+      case 'textUnderline':
+        return 'textEntityTypeUnderline';
+      case 'richTextStrikethrough':
+      case 'textStrike':
+        return 'textEntityTypeStrikethrough';
+      case 'richTextSpoiler':
+        return 'textEntityTypeSpoiler';
+      case 'richTextFixed':
+      case 'textFixed':
+        return 'textEntityTypeCode';
+      case 'richTextMentionName':
+        return 'textEntityTypeMentionName';
+      case 'richTextUrl':
+      case 'textUrl':
+      case 'richTextReferenceLink':
+      case 'richTextAnchorLink':
+        return 'textEntityTypeTextUrl';
+      case 'richTextMention':
+        return 'textEntityTypeTextUrl';
+      case 'richTextEmailAddress':
+      case 'textEmail':
+        return 'textEntityTypeEmailAddress';
+      case 'richTextPhoneNumber':
+      case 'textPhone':
+        return 'textEntityTypePhoneNumber';
+      case 'richTextHashtag':
+        return 'textEntityTypeHashtag';
+      case 'richTextCashtag':
+        return 'textEntityTypeCashtag';
+      case 'richTextBotCommand':
+        return 'textEntityTypeBotCommand';
+      case 'richTextBankCardNumber':
+        return 'textEntityTypeBankCardNumber';
+      case 'richTextMarked':
+      case 'textMarked':
+        return 'textEntityTypeMarked';
+      case 'richTextSubscript':
+      case 'textSubscript':
+        return 'textEntityTypeSubscript';
+      case 'richTextSuperscript':
+      case 'textSuperscript':
+        return 'textEntityTypeSuperscript';
+      case 'richTextDateTime':
+        return 'textEntityTypeDateTime';
+      default:
+        return null;
+    }
+  }
+
+  static String? _richTextEntityUrl(String? type, Map<String, dynamic> value) {
+    switch (type) {
+      case 'richTextUrl':
+      case 'textUrl':
+      case 'richTextReferenceLink':
+      case 'richTextAnchorLink':
+        return value.str('url');
+      case 'richTextMention':
+        final username = value.str('username');
+        return username == null || username.isEmpty
+            ? null
+            : 'https://t.me/$username';
+      default:
+        return null;
+    }
+  }
+
+  static _ParsedMarkdownText? _richMessageText(Map<String, dynamic>? message) {
+    final blocks = message?.objects('blocks');
+    if (blocks == null || blocks.isEmpty) return null;
+    final builder = _RichTextBuilder();
+    for (final block in blocks) {
+      final before = builder.length;
+      _appendPageBlock(builder, block);
+      if (builder.length > before) builder.blankLine();
+    }
+    final text = builder.buffer.toString().trimRight();
+    if (text.isEmpty) return null;
+    final entities = builder.entities
+        .where((entity) => entity.offset < text.length)
+        .map(
+          (entity) => MessageTextEntity(
+            offset: entity.offset,
+            length:
+                entity.end.clamp(entity.offset, text.length) - entity.offset,
+            type: entity.type,
+            url: entity.url,
+            userId: entity.userId,
+            customEmojiId: entity.customEmojiId,
+            language: entity.language,
+          ),
+        )
+        .where((entity) => entity.length > 0)
+        .toList();
+    return _ParsedMarkdownText(text, entities);
+  }
+
+  static void _appendPageBlock(
+    _RichTextBuilder builder,
+    Map<String, dynamic> block,
+  ) {
+    final start = builder.length;
+    switch (block.type) {
+      case 'pageBlockTitle':
+        _appendRichText(builder, block.obj('title'));
+      case 'pageBlockSubtitle':
+        _appendRichText(builder, block.obj('subtitle'));
+      case 'pageBlockAuthorDate':
+        _appendRichText(builder, block.obj('author'));
+      case 'pageBlockHeader':
+        _appendRichText(builder, block.obj('header'));
+      case 'pageBlockSubheader':
+        _appendRichText(builder, block.obj('subheader'));
+      case 'pageBlockSectionHeading':
+      case 'pageBlockParagraph':
+      case 'pageBlockThinking':
+        _appendRichText(builder, block.obj('text'));
+      case 'pageBlockKicker':
+        _appendRichText(builder, block.obj('kicker'));
+      case 'pageBlockFooter':
+        _appendRichText(builder, block.obj('footer'));
+      case 'pageBlockPreformatted':
+        _appendRichText(builder, block.obj('text'));
+        builder.entity(
+          start,
+          'textEntityTypePreCode',
+          language: block.str('language'),
+        );
+      case 'pageBlockMathematicalExpression':
+        builder.write(block.str('expression') ?? '');
+        builder.entity(start, 'textEntityTypeCode');
+      case 'pageBlockList':
+        _appendPageBlockList(builder, block.objects('items'));
+      case 'pageBlockBlockQuote':
+        _appendPageBlocks(builder, block.objects('blocks'));
+        _appendCredit(builder, block.obj('credit'));
+        builder.entity(start, 'textEntityTypeBlockQuote');
+      case 'pageBlockPullQuote':
+        _appendRichText(builder, block.obj('text'));
+        _appendCredit(builder, block.obj('credit'));
+        builder.entity(start, 'textEntityTypeBlockQuote');
+      case 'pageBlockAnimation':
+      case 'pageBlockAudio':
+      case 'pageBlockPhoto':
+      case 'pageBlockVideo':
+      case 'pageBlockVoiceNote':
+      case 'pageBlockEmbedded':
+      case 'pageBlockMap':
+        _appendCaption(builder, block.obj('caption'));
+      case 'pageBlockCover':
+        final cover = block.obj('cover');
+        if (cover != null) _appendPageBlock(builder, cover);
+      case 'pageBlockEmbeddedPost':
+      case 'pageBlockCollage':
+      case 'pageBlockSlideshow':
+        _appendPageBlocks(builder, block.objects('blocks'));
+        _appendCaption(builder, block.obj('caption'));
+      case 'pageBlockTable':
+        _appendRichText(builder, block.obj('caption'));
+        _appendTable(builder, block['cells']);
+      case 'pageBlockDetails':
+        _appendRichText(builder, block.obj('header'));
+        builder.lineBreak();
+        _appendPageBlocks(builder, block.objects('blocks'));
+      case 'pageBlockRelatedArticles':
+        _appendRichText(builder, block.obj('header'));
+        _appendRelatedArticles(builder, block.objects('articles'));
+      case 'pageBlockChatLink':
+        builder.write(block.str('title') ?? '');
+      case 'pageBlockDivider':
+      case 'pageBlockAnchor':
+        return;
+    }
+  }
+
+  static void _appendPageBlocks(
+    _RichTextBuilder builder,
+    List<Map<String, dynamic>>? blocks,
+  ) {
+    if (blocks == null) return;
+    for (final block in blocks) {
+      final before = builder.length;
+      _appendPageBlock(builder, block);
+      if (builder.length > before) builder.lineBreak();
+    }
+  }
+
+  static void _appendPageBlockList(
+    _RichTextBuilder builder,
+    List<Map<String, dynamic>>? items,
+  ) {
+    if (items == null) return;
+    for (final item in items) {
+      final label = item.str('label');
+      final checked = item.boolean('is_checked') ?? false;
+      if (item.boolean('has_checkbox') ?? false) {
+        builder.write(checked ? '[x] ' : '[ ] ');
+      } else if (label != null && label.isNotEmpty) {
+        builder.write('$label ');
+      } else {
+        builder.write('- ');
+      }
+      _appendPageBlocks(builder, item.objects('blocks'));
+    }
+  }
+
+  static void _appendCaption(
+    _RichTextBuilder builder,
+    Map<String, dynamic>? caption,
+  ) {
+    if (caption == null) return;
+    _appendRichText(builder, caption.obj('text'));
+    _appendCredit(builder, caption.obj('credit'));
+  }
+
+  static void _appendCredit(
+    _RichTextBuilder builder,
+    Map<String, dynamic>? credit,
+  ) {
+    if (credit == null) return;
+    if (richTextText(credit).trim().isEmpty) return;
+    builder.lineBreak();
+    _appendRichText(builder, credit);
+  }
+
+  static void _appendTable(_RichTextBuilder builder, Object? rows) {
+    if (rows is! List) return;
+    for (final row in rows) {
+      if (row is! List) continue;
+      var first = true;
+      for (final rawCell in row) {
+        if (rawCell is! Map<String, dynamic>) continue;
+        if (!first) builder.write('\t');
+        _appendRichText(builder, rawCell.obj('text'));
+        first = false;
+      }
+      builder.lineBreak();
+    }
+  }
+
+  static void _appendRelatedArticles(
+    _RichTextBuilder builder,
+    List<Map<String, dynamic>>? articles,
+  ) {
+    if (articles == null) return;
+    for (final article in articles) {
+      builder.lineBreak();
+      final title = article.str('title') ?? article.str('url') ?? '';
+      if (title.isNotEmpty) builder.write('- $title');
+    }
+  }
+
+  static _ParsedMarkdownText? _markdownText(String text) {
+    if (!text.contains('*') &&
+        !text.contains('_') &&
+        !text.contains('~') &&
+        !text.contains('`')) {
+      return null;
+    }
+    const markers = [
+      _MarkdownMarker('```', 'textEntityTypePre'),
+      _MarkdownMarker('~~', 'textEntityTypeStrikethrough'),
+      _MarkdownMarker('**', 'textEntityTypeBold'),
+      _MarkdownMarker('__', 'textEntityTypeUnderline'),
+      _MarkdownMarker('`', 'textEntityTypeCode'),
+      _MarkdownMarker('*', 'textEntityTypeItalic'),
+      _MarkdownMarker('_', 'textEntityTypeItalic'),
+    ];
+    final buffer = StringBuffer();
+    final entities = <MessageTextEntity>[];
+    var i = 0;
+    var changed = false;
+    while (i < text.length) {
+      _MarkdownMarker? matched;
+      for (final marker in markers) {
+        if (text.startsWith(marker.marker, i)) {
+          matched = marker;
+          break;
+        }
+      }
+      if (matched == null) {
+        buffer.write(text[i]);
+        i += 1;
+        continue;
+      }
+
+      final contentStart = i + matched.marker.length;
+      final contentEnd = text.indexOf(matched.marker, contentStart);
+      if (contentEnd <= contentStart) {
+        buffer.write(text[i]);
+        i += 1;
+        continue;
+      }
+
+      final inner = text.substring(contentStart, contentEnd);
+      if (inner.trim().isEmpty) {
+        buffer.write(text[i]);
+        i += 1;
+        continue;
+      }
+
+      final offset = buffer.length;
+      buffer.write(inner);
+      entities.add(
+        MessageTextEntity(
+          offset: offset,
+          length: inner.length,
+          type: matched.type,
+        ),
+      );
+      i = contentEnd + matched.marker.length;
+      changed = true;
+    }
+
+    if (!changed || entities.isEmpty) return null;
+    return _ParsedMarkdownText(buffer.toString(), entities);
   }
 
   static MessageLocation? locationAttachment(Map<String, dynamic>? content) {
@@ -1115,9 +1651,12 @@ abstract final class TDParse {
   }
 
   static String messageText(Map<String, dynamic> content) {
+    if (isServiceContent(content.type)) return serviceText(content);
     switch (content.type) {
       case 'messageText':
         return content.obj('text')?.str('text') ?? '';
+      case 'messageRichMessage':
+        return _richMessageText(content.obj('message'))?.text ?? '[消息]';
       case 'messagePhoto':
         final caption = content.obj('caption')?.str('text') ?? '';
         return caption.isEmpty ? '[图片]' : caption;
@@ -1172,6 +1711,7 @@ abstract final class TDParse {
       case 'messagePaidMedia':
         return '[付费内容]';
       case 'messagePaidMessagePriceChanged':
+      case 'messageDirectMessagePriceChanged':
         return '[付费消息设置已更改]';
       case 'messageGift':
       case 'messagePremiumGiftCode':
@@ -1210,6 +1750,14 @@ abstract final class TDParse {
         final text = value.str('text')?.trim() ?? '';
         if (text.isNotEmpty) return text;
       }
+      if (_isRichTextType(value.type)) {
+        final text = richTextText(value).trim();
+        if (text.isNotEmpty) return text;
+      }
+      if (value.type == 'richMessage') {
+        final text = _richMessageText(value)?.text.trim() ?? '';
+        if (text.isNotEmpty) return text;
+      }
       for (final key in const ['text', 'caption', 'title', 'description']) {
         final obj = value.obj(key);
         final nested = _nestedFormattedText(obj ?? value[key]);
@@ -1232,6 +1780,27 @@ abstract final class TDParse {
     return '';
   }
 
+  static bool _isRichTextType(String? type) {
+    return type == 'textEmpty' ||
+        type == 'textPlain' ||
+        type == 'textBold' ||
+        type == 'textItalic' ||
+        type == 'textUnderline' ||
+        type == 'textStrike' ||
+        type == 'textFixed' ||
+        type == 'textUrl' ||
+        type == 'textEmail' ||
+        type == 'textConcat' ||
+        type == 'textSubscript' ||
+        type == 'textSuperscript' ||
+        type == 'textMarked' ||
+        type == 'textPhone' ||
+        type == 'textImage' ||
+        type == 'textAnchor' ||
+        (type?.startsWith('richText') ?? false) ||
+        type == 'richTexts';
+  }
+
   static const _serviceTypes = {
     'messageBasicGroupChatCreate',
     'messageSupergroupChatCreate',
@@ -1245,6 +1814,8 @@ abstract final class TDParse {
     'messageChatUpgradeTo',
     'messageChatUpgradeFrom',
     'messagePinMessage',
+    'messagePaidMessagePriceChanged',
+    'messageDirectMessagePriceChanged',
     'messageContactRegistered',
     'messageChatSetTheme',
     'messageCustomServiceAction',
@@ -1278,6 +1849,24 @@ abstract final class TDParse {
         return '有成员离开了群聊';
       case 'messagePinMessage':
         return '置顶了一条消息';
+      case 'messagePaidMessagePriceChanged':
+      case 'messageDirectMessagePriceChanged':
+        final stars =
+            content?.integer('paid_message_star_count') ??
+            content?.integer('star_count') ??
+            content?.integer('price') ??
+            0;
+        return stars > 0 ? '发送消息价格已改为 $stars 星' : '已关闭付费消息';
+      case 'messageChatSetMessageAutoDeleteTime':
+        final seconds =
+            content?.obj('message_auto_delete_time')?.integer('time') ??
+            content?.integer('message_auto_delete_time') ??
+            content?.integer('time') ??
+            content?.integer('auto_delete_time') ??
+            0;
+        return seconds > 0
+            ? '自动删除消息已设为${formatDuration(seconds)}'
+            : '自动删除消息已关闭';
       case 'messageBasicGroupChatCreate':
       case 'messageSupergroupChatCreate':
         return '群聊已创建';
@@ -1306,9 +1895,29 @@ abstract final class TDParse {
       case 'messageChatJoinByLink':
       case 'messageChatJoinByRequest':
         return senderId != null && senderId > 0 ? [senderId] : const <int>[];
+      case 'messageChatDeleteMember':
+        final userId = content?.int64('user_id');
+        return userId != null && userId > 0 ? [userId] : const <int>[];
       default:
         return const <int>[];
     }
+  }
+
+  static String formatDuration(int seconds) {
+    if (seconds <= 0) return '关闭';
+    if (seconds % 86400 == 0) {
+      final days = seconds ~/ 86400;
+      return days == 1 ? '1天' : '$days天';
+    }
+    if (seconds % 3600 == 0) {
+      final hours = seconds ~/ 3600;
+      return '$hours小时';
+    }
+    if (seconds % 60 == 0) {
+      final minutes = seconds ~/ 60;
+      return '$minutes分钟';
+    }
+    return '$seconds秒';
   }
 
   // MARK: Files

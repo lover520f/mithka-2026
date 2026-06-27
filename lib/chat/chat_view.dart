@@ -49,10 +49,12 @@ class ChatView extends StatefulWidget {
     required this.chatId,
     required this.title,
     this.initialMessageId,
+    this.showBackButton = true,
   });
   final int chatId;
   final String title;
   final int? initialMessageId;
+  final bool showBackButton;
 
   @override
   State<ChatView> createState() => _ChatViewState();
@@ -66,6 +68,13 @@ class _TranscriptEntry {
 
   ChatMessage get first => messages.first;
   bool get isImageGroup => messages.length > 1;
+}
+
+class _ImageGroupLayout {
+  const _ImageGroupLayout(this.height, this.tiles);
+
+  final double height;
+  final List<Rect> tiles;
 }
 
 class _ChatViewState extends State<ChatView> {
@@ -194,29 +203,37 @@ class _ChatViewState extends State<ChatView> {
     final opening = inset > _keyboardInset;
     _keyboardInset = inset;
     if ((wasNearBottom || opening) && _scrollTargetId == null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scroll.hasClients) return;
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-        );
-      });
+      _scheduleScrollToBottom(animated: true, keyboardSettle: true);
     }
   }
 
-  void _animateToBottom({bool animated = true}) {
+  void _scheduleScrollToBottom({
+    bool animated = true,
+    bool keyboardSettle = false,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _animateToBottom(animated: animated, keyboardSettle: keyboardSettle);
+    });
+  }
+
+  void _animateToBottom({bool animated = true, bool keyboardSettle = false}) {
     if (!_scroll.hasClients) return;
     final target = _scroll.position.maxScrollExtent;
     if (!animated || (target - _scroll.position.pixels).abs() < 48) {
       _scroll.jumpTo(target);
+      _settleAtBottom(keyboardSettle: keyboardSettle);
       return;
     }
-    _scroll.animateTo(
-      target,
-      duration: const Duration(milliseconds: 160),
-      curve: Curves.easeOutCubic,
-    );
+    _scroll
+        .animateTo(
+          target,
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+        )
+        .whenComplete(() {
+          if (mounted) _settleAtBottom(keyboardSettle: keyboardSettle);
+        });
   }
 
   Future<void> _returnToLatest() async {
@@ -239,10 +256,7 @@ class _ChatViewState extends State<ChatView> {
       if (!mounted || !ok) return;
       _liveNewMessageCount = 0;
       _bannerDismissed = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _animateToBottom();
-      });
+      _scheduleScrollToBottom(animated: true);
     } finally {
       _loadingLatestFromAnchor = false;
     }
@@ -293,8 +307,9 @@ class _ChatViewState extends State<ChatView> {
           (newest.isOutgoing || (wasNearBottom && !_isUserScrolling));
       if (shouldAutoScroll) {
         _liveNewMessageCount = 0;
-        WidgetsBinding.instance.addPostFrameCallback(
-          (_) => _animateToBottom(animated: newest.isOutgoing),
+        _scheduleScrollToBottom(
+          animated: newest.isOutgoing,
+          keyboardSettle: newest.isOutgoing,
         );
       } else if (_didInitialScroll &&
           restore == null &&
@@ -338,10 +353,14 @@ class _ChatViewState extends State<ChatView> {
     }
     _scheduleAutoTranslate();
     // The "N条新消息" banner shows on entry, then auto-hides after a few seconds.
+    final keepEntryUnreadBanner =
+        context.read<ThemeController>().openChatsAtLatest &&
+        _liveNewMessageCount == 0;
     if (_vm.unreadCount > 0 &&
         _liveNewMessageCount == 0 &&
         _bannerTimer == null &&
-        !_bannerDismissed) {
+        !_bannerDismissed &&
+        !keepEntryUnreadBanner) {
       _bannerTimer = Timer(const Duration(seconds: 6), () {
         if (mounted) setState(() => _bannerDismissed = true);
       });
@@ -396,19 +415,36 @@ class _ChatViewState extends State<ChatView> {
   void _scrollToBottom({bool settle = false}) {
     if (!_scroll.hasClients) return;
     _scroll.jumpTo(_scroll.position.maxScrollExtent);
-    if (settle) _settleAtBottom();
+    if (settle) _settleAtBottom(keyboardSettle: true);
   }
 
-  void _settleAtBottom() {
+  void _settleAtBottom({bool keyboardSettle = false}) {
     final generation = ++_bottomSettleGeneration;
     () async {
-      for (var i = 0; i < 4; i++) {
+      final delays = keyboardSettle
+          ? const <Duration>[
+              Duration.zero,
+              Duration(milliseconds: 16),
+              Duration(milliseconds: 48),
+              Duration(milliseconds: 120),
+              Duration(milliseconds: 240),
+              Duration(milliseconds: 360),
+            ]
+          : const <Duration>[
+              Duration.zero,
+              Duration(milliseconds: 16),
+              Duration(milliseconds: 48),
+              Duration(milliseconds: 120),
+            ];
+      for (final delay in delays) {
+        if (delay > Duration.zero) {
+          await Future<void>.delayed(delay);
+        }
         await WidgetsBinding.instance.endOfFrame;
         if (!mounted || generation != _bottomSettleGeneration) return;
         if (_scroll.hasClients && _isNearBottom(420)) {
           _scroll.jumpTo(_scroll.position.maxScrollExtent);
         }
-        await Future<void>.delayed(const Duration(milliseconds: 24));
       }
     }();
   }
@@ -471,7 +507,8 @@ class _ChatViewState extends State<ChatView> {
     _scrollToBottom();
   }
 
-  bool get _canBackSwipe => !_isSelecting && _actionTarget == null;
+  bool get _canBackSwipe =>
+      widget.showBackButton && !_isSelecting && _actionTarget == null;
 
   void _onBackSwipePointerDown(PointerDownEvent event) {
     if (!_canBackSwipe) return;
@@ -939,7 +976,17 @@ class _ChatViewState extends State<ChatView> {
     if (sourceText.trim().isEmpty) return true;
     final targetLanguage = _translationTargetLanguage(translation);
     try {
-      if (translation.provider == TranslationProvider.tdlib) {
+      if (translation.provider == TranslationProvider.nativeOnDevice) {
+        await _vm.translateMessageExternally(
+          message.id,
+          targetLanguage,
+          () => NativeTranslationApi.translate(
+            text: sourceText,
+            sourceLanguageCode: 'autodetect',
+            targetLanguageCode: targetLanguage,
+          ),
+        );
+      } else if (translation.provider == TranslationProvider.tdlib) {
         await _vm.translateMessage(message.id, targetLanguage);
       } else {
         await _vm.translateMessageExternally(
@@ -1244,7 +1291,7 @@ class _ChatViewState extends State<ChatView> {
             'Start',
             style: TextStyle(
               fontSize: 16,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
               color: Colors.white,
             ),
           ),
@@ -1441,18 +1488,21 @@ class _ChatViewState extends State<ChatView> {
           padding: const EdgeInsets.symmetric(horizontal: 14),
           child: Row(
             children: [
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => Navigator.of(context).pop(),
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: Icon(
-                    sfIcon('chevron.left'),
-                    size: 22,
-                    color: c.textPrimary,
+              if (widget.showBackButton)
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => Navigator.of(context).pop(),
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 10),
+                    child: Icon(
+                      sfIcon('chevron.left'),
+                      size: 22,
+                      color: c.textPrimary,
+                    ),
                   ),
-                ),
-              ),
+                )
+              else
+                const SizedBox(width: 4),
               Expanded(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -1834,6 +1884,7 @@ class _ChatViewState extends State<ChatView> {
                     onOpenSticker: _openSticker,
                     onPlayVideo: _playVideo,
                     onButtonTap: _pressMessageButton,
+                    onBotCommandTap: _vm.sendCommand,
                     isRead: _vm.isRead(message),
                     onToggleReaction: (r) => _vm.toggleReaction(message, r),
                     onRedial: _startCall,
@@ -1939,7 +1990,7 @@ class _ChatViewState extends State<ChatView> {
       return previous.mediaAlbumId != 0 &&
           previous.mediaAlbumId == next.mediaAlbumId;
     }
-    return (next.date - previous.date).abs() <= 20;
+    return false;
   }
 
   Widget _imageGroupBubble(List<ChatMessage> group) {
@@ -2027,14 +2078,16 @@ class _ChatViewState extends State<ChatView> {
     List<String> captions,
   ) {
     final c = context.colors;
-    const maxWidth = 252.0;
-    const gap = 4.0;
     final visible = group.take(9).toList();
-    final columns = visible.length <= 2 ? visible.length : 3;
-    final tile = (maxWidth - gap * (columns - 1)) / columns;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final maxWidth = visible.length > 1
+        ? math.min(350.0, screenWidth - 86)
+        : math.min(252.0, screenWidth - 86);
+    const padding = 4.0;
+    final layout = _imageGroupLayout(maxWidth, visible.length, padding);
     return Container(
-      constraints: const BoxConstraints(maxWidth: maxWidth),
-      padding: const EdgeInsets.all(4),
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      padding: const EdgeInsets.all(padding),
       decoration: BoxDecoration(
         color: outgoing ? AppTheme.bubbleOutgoing : c.bubbleIncoming,
         borderRadius: BorderRadius.circular(8),
@@ -2044,20 +2097,25 @@ class _ChatViewState extends State<ChatView> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Wrap(
-            spacing: gap,
-            runSpacing: gap,
-            children: [
-              for (var i = 0; i < visible.length; i++)
-                _imageGroupTile(
-                  visible[i],
-                  width: tile,
-                  height: tile,
-                  extraCount: i == visible.length - 1
-                      ? math.max(0, group.length - visible.length)
-                      : 0,
-                ),
-            ],
+          SizedBox(
+            width: maxWidth - padding * 2,
+            height: layout.height,
+            child: Stack(
+              children: [
+                for (var i = 0; i < visible.length; i++)
+                  Positioned.fromRect(
+                    rect: layout.tiles[i],
+                    child: _imageGroupTile(
+                      visible[i],
+                      width: layout.tiles[i].width,
+                      height: layout.tiles[i].height,
+                      extraCount: i == visible.length - 1
+                          ? math.max(0, group.length - visible.length)
+                          : 0,
+                    ),
+                  ),
+              ],
+            ),
           ),
           if (captions.isNotEmpty)
             Padding(
@@ -2074,6 +2132,99 @@ class _ChatViewState extends State<ChatView> {
         ],
       ),
     );
+  }
+
+  _ImageGroupLayout _imageGroupLayout(
+    double maxWidth,
+    int count,
+    double padding,
+  ) {
+    const gap = 4.0;
+    final width = maxWidth - padding * 2;
+    Rect rect(double left, double top, double w, double h) =>
+        Rect.fromLTWH(left, top, w, h);
+
+    if (count == 1) {
+      return _ImageGroupLayout(width * 0.72, [rect(0, 0, width, width * 0.72)]);
+    }
+
+    if (count == 2) {
+      final tile = (width - gap) / 2;
+      return _ImageGroupLayout(tile, [
+        rect(0, 0, tile, tile),
+        rect(tile + gap, 0, tile, tile),
+      ]);
+    }
+
+    if (count == 3) return _rowSpanImageGroup(width, count, firstRowSpan: 2);
+    if (count == 5) return _rowSpanImageGroup(width, count, firstRowSpan: 2);
+    if (count == 7) return _rowSpanImageGroup(width, count, firstRowSpan: 3);
+    if (count == 8) return _rowSpanImageGroup(width, count, firstRowSpan: 2);
+
+    const columns = 2;
+    final tile = (width - gap * (columns - 1)) / columns;
+    if (count == 4) {
+      const rows = 2;
+      final height = tile * rows + gap * (rows - 1);
+      return _ImageGroupLayout(height, [
+        for (var i = 0; i < count; i++)
+          rect(
+            (i % columns) * (tile + gap),
+            (i ~/ columns) * (tile + gap),
+            tile,
+            tile,
+          ),
+      ]);
+    }
+
+    const gridColumns = 3;
+    final gridTile = (width - gap * (gridColumns - 1)) / gridColumns;
+    final gridRows = count <= 6 ? 2 : 3;
+    final height = gridTile * gridRows + gap * (gridRows - 1);
+    return _ImageGroupLayout(height, [
+      for (var i = 0; i < count; i++)
+        rect(
+          (i % gridColumns) * (gridTile + gap),
+          (i ~/ gridColumns) * (gridTile + gap),
+          gridTile,
+          gridTile,
+        ),
+    ]);
+  }
+
+  _ImageGroupLayout _rowSpanImageGroup(
+    double width,
+    int count, {
+    required int firstRowSpan,
+  }) {
+    const gap = 4.0;
+    final columns = count == 3 ? 2 : 3;
+    final tile = (width - gap * (columns - 1)) / columns;
+    var rows = firstRowSpan;
+    while (rows * columns - firstRowSpan < count - 1) {
+      rows += 1;
+    }
+    final height = tile * rows + gap * (rows - 1);
+    final tiles = <Rect>[
+      Rect.fromLTWH(0, 0, tile, tile * firstRowSpan + gap * (firstRowSpan - 1)),
+    ];
+    final slots = <({int col, int row})>[
+      for (var row = 0; row < rows; row++)
+        for (var col = 0; col < columns; col++)
+          if (!(col == 0 && row < firstRowSpan)) (col: col, row: row),
+    ];
+    for (var i = 1; i < count; i++) {
+      final slot = slots[i - 1];
+      tiles.add(
+        Rect.fromLTWH(
+          slot.col * (tile + gap),
+          slot.row * (tile + gap),
+          tile,
+          tile,
+        ),
+      );
+    }
+    return _ImageGroupLayout(height, tiles);
   }
 
   Widget _imageGroupTile(

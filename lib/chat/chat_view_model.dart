@@ -142,6 +142,8 @@ class ChatViewModel extends ChangeNotifier {
   bool botStartSent = false;
   BotMenuInfo? botMenu;
   List<BotCommandOption> botCommands = const [];
+  int messageAutoDeleteTime = 0;
+  int paidMessageStarCount = 0;
 
   final TdClient _client = TdClient.shared;
   StreamSubscription? _sub;
@@ -178,6 +180,10 @@ class ChatViewModel extends ChangeNotifier {
   bool get canChooseMessageSender => availableMessageSenders.length > 1;
   bool get canLoadOlder =>
       !_isLoadingOlder && _allMessages.isNotEmpty && _hasOlderHistory;
+  bool get requiresPaidMessage => paidMessageStarCount > 0;
+  String get inputPlaceholder => messageAutoDeleteTime > 0
+      ? '消息将在${TDParse.formatDuration(messageAutoDeleteTime)}后自动删除'
+      : '发送消息…';
 
   final Map<int, _SenderInfo> _senderCache = {};
   final Set<int> _resolvingSenders = {};
@@ -799,6 +805,12 @@ class ChatViewModel extends ChangeNotifier {
     });
   }
 
+  void sendCommand(String command) {
+    final trimmed = command.trim();
+    if (!trimmed.startsWith('/')) return;
+    _sendText(trimmed);
+  }
+
   Future<Map<String, dynamic>> answerCallbackButton(
     int messageId,
     MessageButton button,
@@ -982,6 +994,8 @@ class ChatViewModel extends ChangeNotifier {
     lastReadInboxId = chat.int64('last_read_inbox_message_id') ?? 0;
     unreadCount = chat.integer('unread_count') ?? 0;
     isMuted = (chat.obj('notification_settings')?.integer('mute_for') ?? 0) > 0;
+    messageAutoDeleteTime = _autoDeleteSeconds(chat);
+    paidMessageStarCount = _paidMessageStars(chat);
     final kind = TDParse.chatKind(chat);
     isGroup = kind == ChatKind.group || kind == ChatKind.channel;
 
@@ -1048,6 +1062,27 @@ class ChatViewModel extends ChangeNotifier {
     }
     notifyListeners();
     _loadPinnedMessage();
+  }
+
+  int _autoDeleteSeconds(Map<String, dynamic> chat) {
+    final nested = chat.obj('message_auto_delete_time');
+    return nested?.integer('time') ??
+        chat.integer('message_auto_delete_time') ??
+        chat.integer('auto_delete_time') ??
+        0;
+  }
+
+  int _paidMessageStars(Map<String, dynamic> chat) {
+    final direct = chat.obj('direct_messages_chat_topic');
+    final settings = chat.obj('paid_message_settings');
+    return chat.integer('paid_message_star_count') ??
+        chat.integer('send_paid_message_star_count') ??
+        chat.integer('paid_messages_star_count') ??
+        direct?.integer('paid_message_star_count') ??
+        direct?.integer('send_paid_message_star_count') ??
+        settings?.integer('paid_message_star_count') ??
+        settings?.integer('send_paid_message_star_count') ??
+        0;
   }
 
   bool _isBotUser(Map<String, dynamic> user) =>
@@ -1376,12 +1411,11 @@ class ChatViewModel extends ChangeNotifier {
         final messageId = update.int64('message_id');
         final content = update.obj('new_content');
         if (messageId == null || content == null) return;
-        final ft = _formattedTextForContent(content);
         _replaceText(
           messageId,
           TDParse.messageText(content),
-          entities: TDParse.textEntities(ft),
-          customEmoji: TDParse.customEmojiEntities(ft),
+          entities: TDParse.messageTextEntities(content),
+          customEmoji: TDParse.customEmojiEntitiesForContent(content),
           linkPreview: TDParse.linkPreview(content.obj('link_preview')),
           updateLinkPreview: true,
         );
@@ -1394,6 +1428,30 @@ class ChatViewModel extends ChangeNotifier {
           messageId,
           TDParse.messageButtonRows(update.obj('reply_markup')),
         );
+
+      case 'updateChat':
+        final chat = update.obj('chat');
+        if (chat == null || chat.int64('id') != chatId) return;
+        messageAutoDeleteTime = _autoDeleteSeconds(chat);
+        paidMessageStarCount = _paidMessageStars(chat);
+        notifyListeners();
+
+      case 'updateChatMessageAutoDeleteTime':
+        if (update.int64('chat_id') != chatId) return;
+        messageAutoDeleteTime =
+            update.obj('message_auto_delete_time')?.integer('time') ??
+            update.integer('message_auto_delete_time') ??
+            update.integer('time') ??
+            0;
+        notifyListeners();
+
+      case 'updateChatPaidMessageStarCount':
+        if (update.int64('chat_id') != chatId) return;
+        paidMessageStarCount =
+            update.integer('paid_message_star_count') ??
+            update.integer('star_count') ??
+            0;
+        notifyListeners();
 
       case 'updateDeleteMessages':
         if (update.int64('chat_id') != chatId) return;
@@ -1693,14 +1751,6 @@ class ChatViewModel extends ChangeNotifier {
     _applyKeywordFilter();
   }
 
-  Map<String, dynamic>? _formattedTextForContent(Map<String, dynamic> content) {
-    return switch (content.type) {
-      'messageText' => content.obj('text'),
-      'messagePhoto' || 'messageVideo' => content.obj('caption'),
-      _ => null,
-    };
-  }
-
   void _replaceText(
     int messageId,
     String text, {
@@ -1878,6 +1928,8 @@ class ChatViewModel extends ChangeNotifier {
         case 'messageChatJoinByLink':
         case 'messageChatJoinByRequest':
           _resolveJoinServiceText(message);
+        case 'messageChatDeleteMember':
+          _resolveDeleteMemberServiceText(message);
       }
     }
   }
@@ -1903,6 +1955,23 @@ class ChatViewModel extends ChangeNotifier {
     if (index < 0 || messages[index].text == text) return;
     messages[index].text = text;
     notifyListeners();
+  }
+
+  Future<void> _resolveDeleteMemberServiceText(ChatMessage message) async {
+    if (message.serviceUserIds.isEmpty) return;
+    try {
+      final user = await _client.query({
+        '@type': 'getUser',
+        'user_id': message.serviceUserIds.first,
+      });
+      final name = TDParse.userName(user);
+      if (name.isEmpty) return;
+      final text = '$name离开了群聊';
+      final index = messages.indexWhere((m) => m.id == message.id);
+      if (index < 0 || messages[index].text == text) return;
+      messages[index].text = text;
+      notifyListeners();
+    } catch (_) {}
   }
 
   Future<void> _resolveSender(int senderId) async {
