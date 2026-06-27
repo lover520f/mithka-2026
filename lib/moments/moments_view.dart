@@ -176,7 +176,9 @@ class _MomentsViewState extends State<MomentsView> {
                         trailing: _channelActivity(),
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => const ChannelMomentsView(),
+                            builder: (_) => ChannelMomentsView(
+                              initialChannels: _allChannels,
+                            ),
                           ),
                         ),
                       ),
@@ -292,9 +294,14 @@ class _MomentsViewState extends State<MomentsView> {
 }
 
 class ChannelMomentsView extends StatefulWidget {
-  const ChannelMomentsView({super.key, this.isRootTab = false});
+  const ChannelMomentsView({
+    super.key,
+    this.isRootTab = false,
+    this.initialChannels = const [],
+  });
 
   final bool isRootTab;
+  final List<ChatSummary> initialChannels;
 
   @override
   State<ChannelMomentsView> createState() => _ChannelMomentsViewState();
@@ -307,6 +314,7 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
   final _scroll = ScrollController();
   StreamSubscription? _tdSub;
   Timer? _refreshTimer;
+  Timer? _metadataHydrationTimer;
   final Map<int, List<ChannelPost>> _postsByChannel = {};
   final Map<int, int> _oldestMessageByChannel = {};
   final Set<int> _loadingChannels = {};
@@ -326,7 +334,11 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
   bool _loadingPosts = false;
   bool _loadingPostableChannels = false;
   bool _refreshingLiveUpdates = false;
+  bool _deferredAllChannelLoadScheduled = false;
+  bool _hasLoadedAllChannelPostsOnce = false;
   static const _perChannelPageSize = 30;
+  static const _initialChannelPostBatchSize = 12;
+  static const _metadataHydrationLimit = 60;
   static const _feedLimit = 500;
 
   @override
@@ -337,6 +349,11 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
     _tdSub = TdClient.shared.subscribe().listen(_handleTdUpdate);
     _model.onAppear();
     _loadMe();
+    if (widget.initialChannels.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadChannelPosts();
+      });
+    }
   }
 
   @override
@@ -347,6 +364,7 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
     _scroll.dispose();
     _tdSub?.cancel();
     _refreshTimer?.cancel();
+    _metadataHydrationTimer?.cancel();
     _replyController.dispose();
     _replyFocus.dispose();
     super.dispose();
@@ -450,6 +468,11 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
 
   List<ChatSummary> get _channels {
     final byId = <int, ChatSummary>{};
+    for (final chat in widget.initialChannels) {
+      if (chat.kind == ChatKind.channel) {
+        byId[chat.id] = chat;
+      }
+    }
     for (final chat in [..._model.chats, ..._model.archived]) {
       if (chat.kind == ChatKind.channel) {
         byId[chat.id] = chat;
@@ -466,19 +489,24 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
 
   List<ChannelPost> _groupPostAlbums(List<ChannelPost> posts) {
     final grouped = <ChannelPost>[];
+    final albums = <String, List<ChannelPost>>{};
     final consumed = <String>{};
     for (final post in posts) {
       final key = _postAlbumKey(post);
-      if (key == null || consumed.contains(key)) {
-        if (key == null) grouped.add(post);
-        continue;
+      if (key == null) {
+        grouped.add(post);
+      } else {
+        (albums[key] ??= <ChannelPost>[]).add(post);
       }
-      final album = posts.where((item) => _postAlbumKey(item) == key).toList()
-        ..sort((a, b) {
-          final date = a.message.date.compareTo(b.message.date);
-          return date != 0 ? date : a.message.id.compareTo(b.message.id);
-        });
-      consumed.add(key);
+    }
+    for (final post in posts) {
+      final key = _postAlbumKey(post);
+      if (key == null || !consumed.add(key)) continue;
+      final album = albums[key] ?? const <ChannelPost>[];
+      album.sort((a, b) {
+        final date = a.message.date.compareTo(b.message.date);
+        return date != 0 ? date : a.message.id.compareTo(b.message.id);
+      });
       if (album.length <= 1) {
         grouped.add(post);
         continue;
@@ -567,10 +595,26 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
   }
 
   Future<void> _loadChannelPosts({bool loadOlder = false}) async {
-    final channels = _channels;
-    if (channels.isEmpty) {
+    final allChannels = _channels;
+    if (allChannels.isEmpty) {
       _loadingPosts = false;
       return;
+    }
+    final deferRest =
+        !loadOlder &&
+        !_hasLoadedAllChannelPostsOnce &&
+        allChannels.length > _initialChannelPostBatchSize;
+    final channels = deferRest
+        ? allChannels.take(_initialChannelPostBatchSize).toList()
+        : allChannels;
+    if (deferRest && !_deferredAllChannelLoadScheduled) {
+      _deferredAllChannelLoadScheduled = true;
+      Future<void>.delayed(const Duration(milliseconds: 700), () {
+        if (!mounted) return;
+        _hasLoadedAllChannelPostsOnce = true;
+        _deferredAllChannelLoadScheduled = false;
+        _loadChannelPosts();
+      });
     }
     for (final channel in channels) {
       final hasLoaded = _postsByChannel.containsKey(channel.id);
@@ -615,10 +659,7 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
         _exhaustedChannels.add(channel.id);
       }
       _appendPosts(channel.id, messages);
-      _loadAuthors(messages);
-      _loadLikeNames(messages);
-      _loadThreadTargets(messages);
-      _loadComments(messages);
+      _schedulePostMetadataHydration();
     } catch (_) {
       _postsByChannel.putIfAbsent(channel.id, () => const []);
     } finally {
@@ -626,6 +667,18 @@ class _ChannelMomentsViewState extends State<ChannelMomentsView> {
       _loadingPosts = _loadingChannels.isNotEmpty;
       if (mounted) setState(() {});
     }
+  }
+
+  void _schedulePostMetadataHydration() {
+    _metadataHydrationTimer?.cancel();
+    _metadataHydrationTimer = Timer(const Duration(milliseconds: 220), () {
+      if (!mounted) return;
+      final posts = _posts.take(_metadataHydrationLimit).toList();
+      _loadAuthors(posts);
+      _loadLikeNames(posts);
+      _loadThreadTargets(posts);
+      _loadComments(posts);
+    });
   }
 
   void _loadComments(List<ChannelPost> posts) {

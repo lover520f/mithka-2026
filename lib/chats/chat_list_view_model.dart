@@ -57,7 +57,8 @@ class ChatListViewModel extends ChangeNotifier {
   final Set<String> _exhaustedChatLists = {};
   static const _pageSize = 100;
   static const _initialPageSize = 36;
-  static const _backgroundHydrateLimit = 240;
+  static const _backgroundHydrateLimit = 120;
+  static const _backgroundPrefetchPasses = 3;
 
   void onAppear() {
     if (_listening) return;
@@ -204,7 +205,7 @@ class ChatListViewModel extends ChangeNotifier {
     Future<void>.delayed(const Duration(milliseconds: 450), () {
       _loadArchive(_pageSize);
     });
-    Future<void>.delayed(const Duration(milliseconds: 900), () {
+    Future<void>.delayed(const Duration(seconds: 2), () {
       if (_selectedFilter.isAll) _prefetchMainChats();
     });
   }
@@ -213,7 +214,10 @@ class ChatListViewModel extends ChangeNotifier {
     if (_prefetchingMain || _exhaustedChatLists.contains('main')) return;
     _prefetchingMain = true;
     Future<void>(() async {
-      while (!_exhaustedChatLists.contains('main')) {
+      var passes = 0;
+      while (!_exhaustedChatLists.contains('main') &&
+          passes < _backgroundPrefetchPasses) {
+        passes += 1;
         final loaded = await _loadChatList({
           '@type': 'chatListMain',
         }, _pageSize);
@@ -221,7 +225,7 @@ class ChatListViewModel extends ChangeNotifier {
           '@type': 'chatListMain',
         }, limit: _backgroundHydrateLimit);
         if (!loaded && !_loadingChatLists.contains('main')) break;
-        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
       }
       _prefetchingMain = false;
     });

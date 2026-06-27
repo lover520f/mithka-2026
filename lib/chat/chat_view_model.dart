@@ -108,6 +108,8 @@ class ChatViewModel extends ChangeNotifier {
   int? meId;
   TdFileRef? mePhoto;
   String draft = '';
+  String _draftFormattedText = '';
+  List<Map<String, dynamic>> _draftFormattedEntities = const [];
   final List<_DraftMention> _draftMentions = [];
   ChatMessage? replyTo;
   List<MessageSenderOption> availableMessageSenders = const [];
@@ -156,6 +158,8 @@ class ChatViewModel extends ChangeNotifier {
   // Typing: sender ids currently acting, auto-cleared after a few seconds.
   final Map<int, String> _typing = {};
   Timer? _typingTimer;
+  Timer? _draftSaveTimer;
+  String? _lastSavedDraftText;
 
   /// Header title: profile shows the member count in parentheses after a group name.
   String get headerTitle =>
@@ -348,6 +352,7 @@ class ChatViewModel extends ChangeNotifier {
   }
 
   void onDisappear() {
+    _flushPendingDraftSave();
     _sub?.cancel();
     _sub = null;
     KeywordBlocker.shared.removeListener(_applyKeywordFilter);
@@ -381,6 +386,7 @@ class ChatViewModel extends ChangeNotifier {
     KeywordBlocker.shared.removeListener(_applyKeywordFilter);
     _sub?.cancel();
     _typingTimer?.cancel();
+    _draftSaveTimer?.cancel();
     super.dispose();
   }
 
@@ -395,9 +401,98 @@ class ChatViewModel extends ChangeNotifier {
 
   // MARK: - Sending
 
-  void setDraft(String value) {
+  void setDraft(
+    String value, {
+    String? formattedText,
+    List<Map<String, dynamic>> entities = const [],
+  }) {
     draft = value;
+    _draftFormattedText = formattedText ?? value;
+    _draftFormattedEntities = entities;
     _draftMentions.removeWhere((m) => !draft.contains(m.text));
+    _scheduleDraftSave();
+  }
+
+  void _scheduleDraftSave() {
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = Timer(const Duration(milliseconds: 750), () {
+      _draftSaveTimer = null;
+      _saveDraftNow();
+    });
+  }
+
+  void _flushPendingDraftSave() {
+    final timer = _draftSaveTimer;
+    if (timer == null) return;
+    timer.cancel();
+    _draftSaveTimer = null;
+    _saveDraftNow();
+  }
+
+  void _clearDraft({bool syncRemote = true}) {
+    draft = '';
+    _draftFormattedText = '';
+    _draftFormattedEntities = const [];
+    _draftMentions.clear();
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = null;
+    if (syncRemote) _saveDraftNow();
+  }
+
+  void _saveDraftNow() {
+    final text = _draftFormattedText;
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      if (_lastSavedDraftText == '') return;
+      _lastSavedDraftText = '';
+      _client.send({
+        '@type': 'setChatDraftMessage',
+        'chat_id': chatId,
+        'message_thread_id': 0,
+        'draft_message': null,
+      });
+      return;
+    }
+
+    final allEntities = [
+      ..._draftFormattedEntities,
+      ..._mentionEntitiesFor(text, _draftFormattedEntities),
+    ];
+    if (_lastSavedDraftText == text && allEntities.isEmpty) return;
+    _lastSavedDraftText = text;
+    _client.send({
+      '@type': 'setChatDraftMessage',
+      'chat_id': chatId,
+      'message_thread_id': 0,
+      'draft_message': {
+        '@type': 'draftMessage',
+        'date': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'input_message_text': {
+          '@type': 'inputMessageText',
+          'text': {
+            '@type': 'formattedText',
+            'text': text,
+            if (allEntities.isNotEmpty) 'entities': allEntities,
+          },
+        },
+      },
+    });
+  }
+
+  void _applyRemoteDraft(
+    Map<String, dynamic>? remoteDraft, {
+    bool force = false,
+    bool notify = true,
+  }) {
+    if (!force && (_draftSaveTimer?.isActive ?? false)) return;
+    final text = TDParse.draftText(remoteDraft);
+    if (!force && text == _lastSavedDraftText) return;
+    draft = text;
+    _draftFormattedText = text;
+    _draftFormattedEntities = const [];
+    _draftMentions.clear();
+    _lastSavedDraftText = text;
+    if (notify) notifyListeners();
   }
 
   /// Appends an "@name " mention to the composer (long-press an avatar), backed
@@ -416,14 +511,17 @@ class ChatViewModel extends ChangeNotifier {
     }
     final sep = (draft.isEmpty || draft.endsWith(' ')) ? '' : ' ';
     draft = '$draft$sep$mention ';
+    _draftFormattedText = draft;
+    _draftFormattedEntities = const [];
     _draftMentions.add(_DraftMention(text: mention, userId: userId));
+    _scheduleDraftSave();
     notifyListeners();
   }
 
   void send() {
     final trimmed = draft.trim();
     if (trimmed.isEmpty) return;
-    draft = '';
+    _clearDraft(syncRemote: true);
 
     final request = <String, dynamic>{
       '@type': 'sendMessage',
@@ -446,7 +544,7 @@ class ChatViewModel extends ChangeNotifier {
 
   void sendBotStart() {
     if (!peerIsBot) return;
-    draft = '';
+    _clearDraft(syncRemote: true);
     botStartSent = true;
     _sendText('/start');
     notifyListeners();
@@ -471,8 +569,7 @@ class ChatViewModel extends ChangeNotifier {
   void sendFormatted(String text, List<Map<String, dynamic>> entities) {
     if (text.trim().isEmpty) return;
     final allEntities = [...entities, ..._mentionEntitiesFor(text, entities)];
-    draft = '';
-    _draftMentions.clear();
+    _clearDraft(syncRemote: true);
     final request = <String, dynamic>{
       '@type': 'sendMessage',
       'chat_id': chatId,
@@ -996,6 +1093,7 @@ class ChatViewModel extends ChangeNotifier {
     isMuted = (chat.obj('notification_settings')?.integer('mute_for') ?? 0) > 0;
     messageAutoDeleteTime = _autoDeleteSeconds(chat);
     paidMessageStarCount = _paidMessageStars(chat);
+    _applyRemoteDraft(chat.obj('draft_message'), force: true, notify: false);
     final kind = TDParse.chatKind(chat);
     isGroup = kind == ChatKind.group || kind == ChatKind.channel;
 
@@ -1434,7 +1532,14 @@ class ChatViewModel extends ChangeNotifier {
         if (chat == null || chat.int64('id') != chatId) return;
         messageAutoDeleteTime = _autoDeleteSeconds(chat);
         paidMessageStarCount = _paidMessageStars(chat);
+        if (chat.containsKey('draft_message')) {
+          _applyRemoteDraft(chat.obj('draft_message'), notify: false);
+        }
         notifyListeners();
+
+      case 'updateChatDraftMessage':
+        if (update.int64('chat_id') != chatId) return;
+        _applyRemoteDraft(update.obj('draft_message'));
 
       case 'updateChatMessageAutoDeleteTime':
         if (update.int64('chat_id') != chatId) return;

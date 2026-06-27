@@ -446,6 +446,10 @@ class MessageButton {
       type == 'inlineKeyboardButtonTypeCallbackWithPassword' ||
       type == 'inlineKeyboardButtonTypeCallbackGame' ||
       type == 'inlineKeyboardButtonTypeBuy';
+
+  bool get isWebApp =>
+      type == 'inlineKeyboardButtonTypeWebApp' ||
+      type == 'keyboardButtonTypeWebApp';
 }
 
 class MessageLinkPreview {

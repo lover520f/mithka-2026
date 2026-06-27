@@ -106,7 +106,8 @@ class _ChatInputBarState extends State<ChatInputBar> {
 
   DateTime? _lastTyping;
   void _onTextChanged() {
-    vm.setDraft(_controller.text);
+    final (text, entities) = _controller.toFormatted();
+    vm.setDraft(_controller.text, formattedText: text, entities: entities);
     // setDraft doesn't notify (it would rebuild the whole chat per keystroke), so
     // rebuild just the composer here — otherwise `hasText` stays stale and the
     // send button never appears while typing.

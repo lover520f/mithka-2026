@@ -1511,10 +1511,11 @@ class _MessageBubbleState extends State<MessageBubble>
   ) {
     final c = context.colors;
     final language = (pre.language ?? '').trim();
+    final codeBackground = _codeBackgroundColor;
     return Container(
       width: math.min(MediaQuery.sizeOf(context).width * 0.70, 310.0),
       decoration: BoxDecoration(
-        color: c.searchFill.withValues(alpha: 0.82),
+        color: codeBackground,
         borderRadius: BorderRadius.circular(7),
         border: Border.all(color: c.divider, width: 0.5),
       ),
@@ -1527,7 +1528,10 @@ class _MessageBubbleState extends State<MessageBubble>
             Container(
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(10, 5, 10, 4),
-              color: c.divider.withValues(alpha: 0.45),
+              color: Color.alphaBlend(
+                Colors.black.withValues(alpha: 0.045),
+                codeBackground,
+              ),
               child: Text(
                 language,
                 maxLines: 1,
@@ -1556,6 +1560,15 @@ class _MessageBubbleState extends State<MessageBubble>
           ),
         ],
       ),
+    );
+  }
+
+  Color get _codeBackgroundColor {
+    final c = context.colors;
+    final alpha = Theme.of(context).brightness == Brightness.dark ? 0.10 : 0.07;
+    return Color.alphaBlend(
+      Colors.black.withValues(alpha: alpha),
+      c.searchFill,
     );
   }
 
@@ -1724,7 +1737,7 @@ class _MessageBubbleState extends State<MessageBubble>
           decorations.add(TextDecoration.lineThrough);
         case 'textEntityTypeCode':
           useCodeFont = true;
-          backgroundColor = context.colors.searchFill.withValues(alpha: 0.85);
+          backgroundColor = _codeBackgroundColor;
         case 'textEntityTypePre':
         case 'textEntityTypePreCode':
           useCodeFont = true;

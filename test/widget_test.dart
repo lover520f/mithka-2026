@@ -180,6 +180,45 @@ void main() {
       expect(rows.single.single.type, 'keyboardButtonTypeText');
       expect(rows.single.single.isReplyKeyboard, isTrue);
     });
+
+    test('marks inline and reply keyboard Web App buttons', () {
+      final inlineRows = TDParse.messageButtonRows({
+        '@type': 'replyMarkupInlineKeyboard',
+        'rows': [
+          [
+            {
+              '@type': 'inlineKeyboardButton',
+              'text': 'Mini App',
+              'type': {
+                '@type': 'inlineKeyboardButtonTypeWebApp',
+                'url': 'https://example.com/app',
+              },
+            },
+          ],
+        ],
+      });
+      final replyRows = TDParse.messageButtonRows({
+        '@type': 'replyMarkupShowKeyboard',
+        'rows': [
+          [
+            {
+              '@type': 'keyboardButton',
+              'text': 'Launch',
+              'type': {
+                '@type': 'keyboardButtonTypeWebApp',
+                'url': 'https://example.com/reply-app',
+              },
+            },
+          ],
+        ],
+      });
+
+      expect(inlineRows.single.single.isWebApp, isTrue);
+      expect(inlineRows.single.single.url, 'https://example.com/app');
+      expect(replyRows.single.single.isWebApp, isTrue);
+      expect(replyRows.single.single.isReplyKeyboard, isTrue);
+      expect(replyRows.single.single.url, 'https://example.com/reply-app');
+    });
   });
 
   group('TDParse.linkPreview', () {
