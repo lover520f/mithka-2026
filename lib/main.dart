@@ -14,6 +14,7 @@ import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:fvp/fvp.dart' as fvp;
 import 'package:provider/provider.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app/content_view.dart';
@@ -27,6 +28,12 @@ import 'settings/keyword_blocker.dart';
 import 'settings/translation_controller.dart';
 import 'theme/app_theme.dart';
 import 'theme/theme_controller.dart';
+
+const _sentryDsn = String.fromEnvironment('SENTRY_DSN');
+const _sentryEnvironment = String.fromEnvironment(
+  'SENTRY_ENVIRONMENT',
+  defaultValue: 'production',
+);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,7 +69,19 @@ Future<void> main() async {
   );
   final prefs = await SharedPreferences.getInstance();
   KeywordBlocker.shared.initialize(prefs);
-  runApp(MithkaApp(prefs: prefs));
+  final app = MithkaApp(prefs: prefs);
+  if (_sentryDsn.isEmpty) {
+    runApp(app);
+    return;
+  }
+
+  await SentryFlutter.init((options) {
+    options.dsn = _sentryDsn;
+    options.environment = _sentryEnvironment;
+    options.release = 'mithka@${appVersion.version}+${appVersion.buildNumber}';
+    options.sendDefaultPii = false;
+    options.tracesSampleRate = 0;
+  }, appRunner: () => runApp(app));
 }
 
 class MithkaApp extends StatefulWidget {

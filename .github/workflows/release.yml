@@ -150,7 +150,13 @@ jobs:
           EOF
 
       - name: Build ${{ matrix.abi }} release APK
-        run: flutter build apk --release --split-per-abi --target-platform ${{ matrix.target }} --dart-define="GIT_COMMIT=${{ needs.prepare.outputs.short_sha }}"
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          flutter build apk --release --split-per-abi \
+            --target-platform ${{ matrix.target }} \
+            --dart-define="GIT_COMMIT=${{ needs.prepare.outputs.short_sha }}" \
+            --dart-define="SENTRY_DSN=$SENTRY_DSN"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
