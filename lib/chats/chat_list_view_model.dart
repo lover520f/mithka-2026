@@ -12,6 +12,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../settings/keyword_blocker.dart';
+import '../tdlib/chat_membership.dart';
 import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
@@ -44,6 +45,7 @@ class ChatListViewModel extends ChangeNotifier {
   /// Authoritative store keyed by chat id; `chats` is a sorted projection.
   final Map<int, ChatSummary> _map = {};
   final Map<int, Map<int, int>> _folderOrders = {};
+  final Map<int, bool> _joinedChatCache = {};
   final Map<int, String> _senderNames = {};
   final Set<int> _resolvingSenders = {};
   final Set<int> _resolvingPeers = {};
@@ -397,14 +399,7 @@ class ChatListViewModel extends ChangeNotifier {
       case 'updateNewChat':
         final chat = update.obj('chat');
         if (chat == null) return;
-        final summary = TDParse.chat(chat);
-        if (summary == null) return;
-        summary.lastMessage = _previewText(summary.lastMessage);
-        _map[summary.id] = summary;
-        _applyPositions(summary.id, chat.objects('positions'));
-        _resolvePeerIfNeeded(summary);
-        _resolveSenderIfNeeded(summary.id, chat.obj('last_message'));
-        _resort();
+        unawaited(_ingestRawChat(chat));
 
       case 'updateChatFolders':
         _applyChatFolders(update);
@@ -444,6 +439,7 @@ class ChatListViewModel extends ChangeNotifier {
         final id = update.int64('chat_id');
         final list = update.obj('chat_list');
         if (id == null || list == null) return;
+        _joinedChatCache.remove(id);
         _ensureChatLoaded(id);
         if (list.type == 'chatListFolder') {
           final folderId = list.integer('chat_folder_id');
@@ -574,17 +570,53 @@ class ChatListViewModel extends ChangeNotifier {
     if (_map.containsKey(id)) return;
     _client
         .query({'@type': 'getChat', 'chat_id': id})
-        .then((raw) {
-          final summary = TDParse.chat(raw);
-          if (summary == null) return;
-          summary.lastMessage = _previewText(summary.lastMessage);
-          _map[summary.id] = summary;
-          _applyPositions(summary.id, raw.objects('positions'));
-          _resolvePeerIfNeeded(summary);
-          _resolveSenderIfNeeded(summary.id, raw.obj('last_message'));
-          _scheduleResort();
-        })
+        .then((raw) => _ingestRawChat(raw, schedule: true))
         .catchError((_) {});
+  }
+
+  Future<void> _ingestRawChat(
+    Map<String, dynamic> raw, {
+    bool schedule = false,
+  }) async {
+    final summary = TDParse.chat(raw);
+    if (summary == null) return;
+    if (!await _isJoinedSummary(summary, raw)) {
+      _removeChat(summary.id);
+      return;
+    }
+    summary.lastMessage = _previewText(summary.lastMessage);
+    _map[summary.id] = summary;
+    _applyPositions(summary.id, raw.objects('positions'));
+    _resolvePeerIfNeeded(summary);
+    _resolveSenderIfNeeded(summary.id, raw.obj('last_message'));
+    if (schedule) {
+      _scheduleResort();
+    } else {
+      _resort();
+    }
+  }
+
+  Future<bool> _isJoinedSummary(
+    ChatSummary summary,
+    Map<String, dynamic> raw,
+  ) async {
+    if (summary.kind != ChatKind.group && summary.kind != ChatKind.channel) {
+      return true;
+    }
+    final cached = _joinedChatCache[summary.id];
+    if (cached != null) return cached;
+    final joined = await isJoinedGroupOrChannelChat(summary.id, chat: raw);
+    _joinedChatCache[summary.id] = joined;
+    return joined;
+  }
+
+  void _removeChat(int id) {
+    if (_map.remove(id) == null) return;
+    for (final orders in _folderOrders.values) {
+      orders.remove(id);
+    }
+    _joinedChatCache[id] = false;
+    _scheduleResort();
   }
 
   String _previewText(String text) {
@@ -596,7 +628,9 @@ class ChatListViewModel extends ChangeNotifier {
   void _resort() {
     _resortTimer?.cancel();
     _resortTimer = null;
-    final all = _map.values.toList();
+    final all = _map.values
+        .where((c) => _joinedChatCache[c.id] ?? true)
+        .toList();
     _archived = all.where((c) => c.archiveOrder > 0).toList()
       ..sort(
         (a, b) => a.archiveOrder != b.archiveOrder

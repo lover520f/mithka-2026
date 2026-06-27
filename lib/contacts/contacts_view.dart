@@ -18,6 +18,7 @@ import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
 import '../components/ui_components.dart';
 import '../profile/profile_detail_view.dart';
+import '../tdlib/chat_membership.dart';
 import '../tdlib/json_helpers.dart';
 import '../tdlib/td_client.dart';
 import '../tdlib/td_models.dart';
@@ -86,10 +87,10 @@ class _ContactsViewState extends State<ContactsView> {
                 _searchPill(),
                 _tabs(),
                 switch (_tab) {
-                  0 => _contactList(_vm.contacts),
-                  1 => _chatList(_vm.groups),
-                  2 => _chatList(_vm.channels),
-                  _ => _contactList(_vm.bots),
+                  0 => _contactList(_vm.contacts, loading: _vm.contactsLoading),
+                  1 => _chatList(_vm.groups, loading: _vm.chatsLoading),
+                  2 => _chatList(_vm.channels, loading: _vm.chatsLoading),
+                  _ => _contactList(_vm.bots, loading: _vm.contactsLoading),
                 },
               ],
             ),
@@ -222,8 +223,14 @@ class _ContactsViewState extends State<ContactsView> {
     );
   }
 
-  Widget _contactList(List<Contact> contacts) {
+  Widget _contactList(List<Contact> contacts, {required bool loading}) {
     final c = context.colors;
+    if (contacts.isEmpty) {
+      return _stateCard(
+        loading: loading,
+        emptyText: _tab == 3 ? '暂无机器人' : '暂无联系人',
+      );
+    }
     return _card([
       for (final contact in contacts) ...[
         GestureDetector(
@@ -283,9 +290,15 @@ class _ContactsViewState extends State<ContactsView> {
     ]);
   }
 
-  Widget _chatList(List<ChatSummary> chats) {
+  Widget _chatList(List<ChatSummary> chats, {required bool loading}) {
     final c = context.colors;
     final circleGroups = context.watch<ThemeController>().circularGroupAvatars;
+    if (chats.isEmpty) {
+      return _stateCard(
+        loading: loading,
+        emptyText: _tab == 2 ? '暂无频道' : '暂无群聊',
+      );
+    }
     return _card([
       for (final group in chats) ...[
         GestureDetector(
@@ -325,6 +338,35 @@ class _ContactsViewState extends State<ContactsView> {
       ],
     ]);
   }
+
+  Widget _stateCard({required bool loading, required String emptyText}) {
+    final c = context.colors;
+    return _card([
+      SizedBox(
+        height: 180,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (loading)
+                const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2.2),
+                )
+              else
+                Icon(sfIcon('person.2'), size: 30, color: c.textTertiary),
+              const SizedBox(height: 12),
+              Text(
+                loading ? '加载中…' : emptyText,
+                style: TextStyle(fontSize: 14, color: c.textSecondary),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ]);
+  }
 }
 
 class ContactsViewModel extends ChangeNotifier {
@@ -332,6 +374,8 @@ class ContactsViewModel extends ChangeNotifier {
   List<Contact> bots = [];
   List<ChatSummary> groups = [];
   List<ChatSummary> channels = [];
+  bool contactsLoading = true;
+  bool chatsLoading = true;
 
   bool _started = false;
   final Map<int, ChatSummary> _groupIndex = {};
@@ -353,6 +397,8 @@ class ContactsViewModel extends ChangeNotifier {
   }
 
   Future<void> _loadContacts() async {
+    contactsLoading = true;
+    _safeNotify();
     try {
       final result = await TdClient.shared.query({'@type': 'getContacts'});
       if (_disposed) return;
@@ -379,8 +425,11 @@ class ContactsViewModel extends ChangeNotifier {
       );
       contacts = loaded;
       _sortBots();
+    } catch (_) {
+    } finally {
+      contactsLoading = false;
       _safeNotify();
-    } catch (_) {}
+    }
   }
 
   Contact _contactFromUser(int id, Map<String, dynamic> user) => Contact(
@@ -420,18 +469,45 @@ class ContactsViewModel extends ChangeNotifier {
     }
   }
 
+  Future<void> _hydrateChatList(Map<String, dynamic> list, int limit) async {
+    try {
+      final res = await TdClient.shared.query({
+        '@type': 'getChats',
+        'chat_list': list,
+        'limit': limit,
+      });
+      final ids = res.int64Array('chat_ids') ?? const <int>[];
+      for (final id in ids) {
+        if (_disposed) return;
+        try {
+          final chat = await TdClient.shared.query({
+            '@type': 'getChat',
+            'chat_id': id,
+          });
+          if (_disposed) return;
+          await _ingestChat(chat);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   void _prefetchMainChats() {
     Future<void>(() async {
+      chatsLoading = true;
+      _safeNotify();
       while (!_disposed && !_exhaustedChatLists.contains('chatListMain')) {
         final loaded = await _loadChatList({
           '@type': 'chatListMain',
         }, _pageSize);
+        await _hydrateChatList({'@type': 'chatListMain'}, _pageSize);
         if (_disposed ||
             (!loaded && !_loadingChatLists.contains('chatListMain'))) {
           break;
         }
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
+      chatsLoading = false;
+      _safeNotify();
     });
   }
 
@@ -441,7 +517,7 @@ class ContactsViewModel extends ChangeNotifier {
       switch (update.type) {
         case 'updateNewChat':
           final chat = update.obj('chat');
-          if (chat != null) _ingestChat(chat);
+          if (chat != null) unawaited(_ingestChat(chat));
         case 'updateChatTitle':
           final id = update.int64('chat_id');
           final existing = id != null ? _chatById(id) : null;
@@ -462,7 +538,7 @@ class ContactsViewModel extends ChangeNotifier {
 
   ChatSummary? _chatById(int id) => _groupIndex[id] ?? _channelIndex[id];
 
-  void _ingestChat(Map<String, dynamic> chat) {
+  Future<void> _ingestChat(Map<String, dynamic> chat) async {
     final summary = TDParse.chat(chat);
     if (summary == null) return;
     final type = chat.obj('type');
@@ -471,7 +547,20 @@ class ContactsViewModel extends ChangeNotifier {
       if (userId != null) _resolveBot(userId);
       return;
     }
+    if (!await isJoinedGroupOrChannelChat(summary.id, chat: chat)) {
+      _removeChat(summary.id);
+      return;
+    }
     _ingest(summary);
+  }
+
+  void _removeChat(int id) {
+    var changed = false;
+    changed = _groupIndex.remove(id) != null || changed;
+    changed = _channelIndex.remove(id) != null || changed;
+    if (!changed) return;
+    _refreshChatLists();
+    _safeNotify();
   }
 
   void _ingest(ChatSummary summary) {
@@ -483,11 +572,15 @@ class ContactsViewModel extends ChangeNotifier {
       default:
         return;
     }
+    _refreshChatLists();
+    _safeNotify();
+  }
+
+  void _refreshChatLists() {
     groups = _groupIndex.values.toList()
       ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
     channels = _channelIndex.values.toList()
       ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
-    _safeNotify();
   }
 
   void _resolveBot(int userId) {

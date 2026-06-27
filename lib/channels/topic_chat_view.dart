@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../chat/chat_members_view.dart';
+import '../chat/telegram_rich_text.dart';
 import '../components/confirm_dialog.dart';
 import '../components/photo_avatar.dart';
 import '../components/sf_symbols.dart';
@@ -796,8 +797,9 @@ class _TopicPostRow extends StatelessWidget {
           ),
           if (text.isNotEmpty) ...[
             const SizedBox(height: 14),
-            Text(
-              text,
+            TelegramRichText(
+              text: text,
+              entities: post.message.textEntities,
               style: TextStyle(
                 fontSize: 16,
                 height: 1.35,

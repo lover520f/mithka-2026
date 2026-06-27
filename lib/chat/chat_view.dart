@@ -143,7 +143,10 @@ class _ChatViewState extends State<ChatView> {
     if (_selectionAnchorId != null && scrollingUp != _selectionScrollingUp) {
       setState(() => _selectionScrollingUp = scrollingUp);
     }
-    if (pos.pixels < 500) unawaited(_loadOlderPreservingOffset());
+    if (pos.userScrollDirection == ScrollDirection.forward &&
+        pos.pixels < 500) {
+      unawaited(_loadOlderPreservingOffset());
+    }
     if (_vm.anchoredHistory &&
         pos.userScrollDirection == ScrollDirection.reverse &&
         pos.maxScrollExtent - pos.pixels < 36) {
@@ -203,26 +206,39 @@ class _ChatViewState extends State<ChatView> {
     final opening = inset > _keyboardInset;
     _keyboardInset = inset;
     if ((wasNearBottom || opening) && _scrollTargetId == null) {
-      _scheduleScrollToBottom(animated: true, keyboardSettle: true);
+      _scheduleScrollToBottom(
+        animated: true,
+        keyboardSettle: true,
+        force: opening,
+      );
     }
   }
 
   void _scheduleScrollToBottom({
     bool animated = true,
     bool keyboardSettle = false,
+    bool force = false,
   }) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _animateToBottom(animated: animated, keyboardSettle: keyboardSettle);
+      _animateToBottom(
+        animated: animated,
+        keyboardSettle: keyboardSettle,
+        force: force,
+      );
     });
   }
 
-  void _animateToBottom({bool animated = true, bool keyboardSettle = false}) {
+  void _animateToBottom({
+    bool animated = true,
+    bool keyboardSettle = false,
+    bool force = false,
+  }) {
     if (!_scroll.hasClients) return;
     final target = _scroll.position.maxScrollExtent;
     if (!animated || (target - _scroll.position.pixels).abs() < 48) {
       _scroll.jumpTo(target);
-      _settleAtBottom(keyboardSettle: keyboardSettle);
+      _settleAtBottom(keyboardSettle: keyboardSettle, force: force);
       return;
     }
     _scroll
@@ -232,7 +248,9 @@ class _ChatViewState extends State<ChatView> {
           curve: Curves.easeOutCubic,
         )
         .whenComplete(() {
-          if (mounted) _settleAtBottom(keyboardSettle: keyboardSettle);
+          if (mounted) {
+            _settleAtBottom(keyboardSettle: keyboardSettle, force: force);
+          }
         });
   }
 
@@ -246,7 +264,7 @@ class _ChatViewState extends State<ChatView> {
           _bannerDismissed = true;
         });
       }
-      _animateToBottom();
+      _animateToBottom(force: true);
       return;
     }
     _loadingLatestFromAnchor = true;
@@ -256,7 +274,7 @@ class _ChatViewState extends State<ChatView> {
       if (!mounted || !ok) return;
       _liveNewMessageCount = 0;
       _bannerDismissed = true;
-      _scheduleScrollToBottom(animated: true);
+      _scheduleScrollToBottom(animated: true, force: true);
     } finally {
       _loadingLatestFromAnchor = false;
     }
@@ -273,7 +291,7 @@ class _ChatViewState extends State<ChatView> {
       (m) => !m.isOutgoing && !m.isService && m.id > _vm.lastReadInboxId,
     );
     if (i < 0 || !_scroll.hasClients) {
-      _animateToBottom();
+      _animateToBottom(force: true);
       return;
     }
     final max = _scroll.position.maxScrollExtent;
@@ -310,6 +328,7 @@ class _ChatViewState extends State<ChatView> {
         _scheduleScrollToBottom(
           animated: newest.isOutgoing,
           keyboardSettle: newest.isOutgoing,
+          force: newest.isOutgoing,
         );
       } else if (_didInitialScroll &&
           restore == null &&
@@ -386,7 +405,7 @@ class _ChatViewState extends State<ChatView> {
       return;
     }
     if (context.read<ThemeController>().openChatsAtLatest) {
-      _scrollToBottom(settle: true);
+      _scrollToBottom(settle: true, forceSettle: true);
       return;
     }
     final i = _firstUnreadIndex();
@@ -412,13 +431,15 @@ class _ChatViewState extends State<ChatView> {
     });
   }
 
-  void _scrollToBottom({bool settle = false}) {
+  void _scrollToBottom({bool settle = false, bool forceSettle = false}) {
     if (!_scroll.hasClients) return;
     _scroll.jumpTo(_scroll.position.maxScrollExtent);
-    if (settle) _settleAtBottom(keyboardSettle: true);
+    if (settle) {
+      _settleAtBottom(keyboardSettle: true, force: forceSettle);
+    }
   }
 
-  void _settleAtBottom({bool keyboardSettle = false}) {
+  void _settleAtBottom({bool keyboardSettle = false, bool force = false}) {
     final generation = ++_bottomSettleGeneration;
     () async {
       final delays = keyboardSettle
@@ -442,7 +463,7 @@ class _ChatViewState extends State<ChatView> {
         }
         await WidgetsBinding.instance.endOfFrame;
         if (!mounted || generation != _bottomSettleGeneration) return;
-        if (_scroll.hasClients && _isNearBottom(420)) {
+        if (_scroll.hasClients && (force || _isNearBottom(420))) {
           _scroll.jumpTo(_scroll.position.maxScrollExtent);
         }
       }
@@ -491,7 +512,7 @@ class _ChatViewState extends State<ChatView> {
 
   void _positionAfterShortFill() {
     if (context.read<ThemeController>().openChatsAtLatest) {
-      _scrollToBottom(settle: true);
+      _scrollToBottom(settle: true, forceSettle: true);
       return;
     }
     final i = _firstUnreadIndex();
