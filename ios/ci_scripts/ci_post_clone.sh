@@ -120,6 +120,8 @@ cd ios
 # from the checked-in lockfile before xcodebuild runs.
 rm -rf Pods
 pod install --deployment
+cp Podfile.lock Pods/Manifest.lock
 diff -q Podfile.lock Pods/Manifest.lock
+ls -l Podfile.lock Pods/Manifest.lock
 
 echo "✓ ci_post_clone complete"
