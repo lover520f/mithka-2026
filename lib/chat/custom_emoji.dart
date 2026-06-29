@@ -30,9 +30,12 @@ List<StickerItem> parseStickers(List<Map<String, dynamic>>? array) {
     final file = sticker.obj('sticker');
     final id = file?.integer('id');
     if (file == null || id == null) continue;
+    final format = sticker.obj('format')?.type;
+    final isAnimated = format == 'stickerFormatTgs';
+    final isVideo = format == 'stickerFormatWebm';
     final thumb =
         TDParse.fileRef(sticker.obj('thumbnail')?.obj('file')) ??
-        TdFileRef(id: id);
+        (isVideo || isAnimated ? null : TdFileRef(id: id));
     out.add(
       StickerItem(
         id: id,
@@ -40,8 +43,8 @@ List<StickerItem> parseStickers(List<Map<String, dynamic>>? array) {
         width: sticker.integer('width') ?? 512,
         height: sticker.integer('height') ?? 512,
         emoji: sticker.str('emoji') ?? '',
-        isAnimated: sticker.obj('format')?.type == 'stickerFormatTgs',
-        isVideo: sticker.obj('format')?.type == 'stickerFormatWebm',
+        isAnimated: isAnimated,
+        isVideo: isVideo,
         thumb: thumb,
         customEmojiId: sticker.obj('full_type')?.int64('custom_emoji_id') ?? 0,
       ),
@@ -166,8 +169,7 @@ class _CustomEmojiViewState extends State<CustomEmojiView> {
     if (s.isTgs && s.file != null) {
       child = AnimatedStickerView(file: s.file!);
     } else if (s.isWebm && s.file != null) {
-      // VP9 + alpha custom emoji → play via fvp (video_player) like a sticker.
-      child = VideoStickerView(file: s.file!);
+      child = VideoStickerView(file: s.file!, fallback: s.thumb);
     } else {
       final img = s.file ?? s.thumb;
       if (img == null) return SizedBox(width: widget.size, height: widget.size);

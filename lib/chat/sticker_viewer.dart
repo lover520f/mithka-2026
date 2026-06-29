@@ -106,7 +106,10 @@ class _StickerViewerState extends State<StickerViewer> {
       return AnimatedStickerView(file: _message.animatedSticker!);
     }
     if (_message.videoSticker != null) {
-      return VideoStickerView(file: _message.videoSticker!);
+      return VideoStickerView(
+        file: _message.videoSticker!,
+        fallback: _message.image,
+      );
     }
     if (_message.image != null) {
       return TDImage(
@@ -128,7 +131,10 @@ class _StickerViewerState extends State<StickerViewer> {
       return AnimatedStickerView(file: _message.animatedSticker!);
     }
     if (_message.videoSticker != null) {
-      return VideoStickerView(file: _message.videoSticker!);
+      return VideoStickerView(
+        file: _message.videoSticker!,
+        fallback: _message.image,
+      );
     }
     return TDImage(photo: ref, cornerRadius: 8, fit: BoxFit.contain);
   }

@@ -2,9 +2,9 @@
 //  sticker_preview.dart
 //
 //  Renders a StickerItem at preview size, animated by format: .tgs → Lottie,
-//  .webm → fvp (video_player), .webp/other → its static thumbnail. Shared by the
-//  sticker picker grid, the set-icon tabs, and the 表情详情 set-detail page so they
-//  all animate consistently (instead of showing a frozen thumbnail).
+//  .webm → VideoStickerView where supported or TDLib's thumbnail fallback,
+//  .webp/other → its static thumbnail. Shared by the sticker picker grid, the
+//  set-icon tabs, and the 表情详情 set-detail page.
 //
 
 import 'package:flutter/material.dart';
@@ -24,7 +24,18 @@ class StickerPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final file = TdFileRef(id: item.id);
     if (item.isAnimated) return AnimatedStickerView(file: file);
-    if (item.isVideo) return VideoStickerView(file: file);
+    if (item.isVideo) {
+      final fallback = item.thumb?.id == item.id ? null : item.thumb;
+      if (fallback != null) {
+        return VideoStickerView(file: file, fallback: fallback);
+      }
+      return Center(
+        child: Text(
+          item.emoji.isEmpty ? '🎴' : item.emoji,
+          style: const TextStyle(fontSize: 30),
+        ),
+      );
+    }
     if (item.thumb != null) {
       return TDImage(
         photo: item.thumb,

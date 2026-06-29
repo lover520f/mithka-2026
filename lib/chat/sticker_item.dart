@@ -26,7 +26,7 @@ class StickerItem {
   final int height;
   final String emoji; // associated standard emoji (custom-emoji fallback)
   final bool isAnimated; // .tgs (Lottie)
-  final bool isVideo; // .webm (VP9 video sticker, played via fvp)
+  final bool isVideo; // .webm (VP9 video sticker)
   final TdFileRef? thumb; // for display in the picker
   final int customEmojiId; // custom_emoji_id (premium emoji), or 0 if regular
 }

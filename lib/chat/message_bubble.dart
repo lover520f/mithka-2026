@@ -495,6 +495,7 @@ class _MessageBubbleState extends State<MessageBubble>
               ),
             VideoStickerView(
               file: message.videoSticker!,
+              fallback: message.image,
               onReady: () => setState(() => _videoStickerReady = true),
             ),
           ],
