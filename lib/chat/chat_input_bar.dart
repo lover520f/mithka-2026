@@ -13,13 +13,16 @@ import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
+import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 import 'package:flutter/services.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:logger/logger.dart' show Level;
+import 'package:mithka/components/app_text_selection_toolbar.dart';
 import 'package:mithka/l10n/app_localizations.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -98,7 +101,8 @@ import 'telegram_ai_service.dart';
 import 'telegram_mini_app_view.dart';
 import 'video_note_preview_view.dart';
 import 'video_note_recorder_view.dart';
-import 'voice_note_preview_view.dart';
+import 'voice_draft_card.dart';
+import 'voice_note_trimmer.dart';
 import 'voice_recording_clock.dart';
 
 enum _Panel { none, function, emoji, sticker, voice, format }
@@ -107,6 +111,20 @@ enum _Panel { none, function, emoji, sticker, voice, format }
 /// `_Panel.emoji` and `_Panel.sticker` render the same unified media panel;
 /// this picks which segment (and secondary strip) is active.
 enum _MediaKind { emoji, sticker, gif }
+
+/// A failure the mobile voice panel shows in its own status line instead of a
+/// toast, which would land over the record button and vanish.
+enum _VoiceInlineError { none, failed, microphoneRequired, microphoneSettings }
+
+/// One segment of the composer's shared segmented switcher. A null [onTap]
+/// draws the segment disabled.
+typedef _ComposerSegment = ({
+  Key key,
+  AppIconData icon,
+  String label,
+  bool selected,
+  VoidCallback? onTap,
+});
 
 enum _RichTextSendMode { direct, botRelay }
 
@@ -490,6 +508,7 @@ class ChatInputBar extends StatefulWidget {
     this.enterToSend = false,
     this.quickRepliesEnabled = true,
     this.showCallAction = true,
+    this.simpleMode = false,
     this.onBotTopicCreated,
     this.quickReplyLoader,
     this.quickReplySender,
@@ -520,6 +539,12 @@ class ChatInputBar extends StatefulWidget {
   final bool enterToSend;
   final bool quickRepliesEnabled;
   final bool showCallAction;
+
+  /// Simple mode (简洁模式): the phone composer collapses to one row (Mic ·
+  /// field · Emoji · More, plus Send while there is something to send) and
+  /// the strip's other tools move into the More panel. The native desktop
+  /// composer ignores it.
+  final bool simpleMode;
   final ValueChanged<int>? onBotTopicCreated;
   @visibleForTesting
   final Future<List<BusinessQuickReplyShortcut>> Function()? quickReplyLoader;
@@ -583,6 +608,10 @@ class _ChatInputBarState extends State<ChatInputBar>
   final _controller = EmojiTextEditingController();
   final _focus = FocusNode();
   final _panelSearch = TextEditingController();
+
+  /// Simple mode's More panel. It never keeps an offset, so the panel always
+  /// opens scrolled to the top.
+  final _simpleMorePanelScroll = ScrollController(keepScrollOffset: false);
   final List<OutgoingAttachment> _pendingClipboardAttachments = [];
   final _desktopActionOwner = Object();
   DesktopHotkeyRegistration? _desktopScreenshotHotkeyRegistration;
@@ -644,7 +673,16 @@ class _ChatInputBarState extends State<ChatInputBar>
   bool _changingRecordingPause = false;
   bool _mobilePointerHeld = false;
   int? _voicePointerId;
-  VoiceNotePreviewResult? _desktopVoiceDraft;
+  // A press on the big button while a locked recording runs: its release
+  // stops the recording and leaves it as a draft above the field.
+  int? _lockedStopPointerId;
+  Offset _lockedStopDownPosition = Offset.zero;
+  _VoiceInlineError _voiceInlineError = _VoiceInlineError.none;
+  VoiceNoteDraft? _desktopVoiceDraft;
+
+  /// The phone's finished recording, waiting above the field to be sent with
+  /// the field's text as its caption, or deleted.
+  ComposerVoiceDraft? _voiceDraft;
   StreamSubscription<desktop_record.Amplitude>? _desktopRecProgress;
   final _desktopVoiceFocus = FocusNode(debugLabel: 'desktopVoiceMessage');
   bool _desktopSpaceHeld = false;
@@ -1463,6 +1501,7 @@ class _ChatInputBarState extends State<ChatInputBar>
       _syncedComposerFocusTick = widget.vm.composerFocusTick;
       _cancelVoiceRecording();
       _discardDesktopVoiceDraft();
+      _discardVoiceDraft(rebuild: false);
       if (_panel == _Panel.voice) _panel = _Panel.none;
       _hideDesktopPopovers(rebuild: false);
       _invalidateAiReplyGeneration(discardGeneratedDraft: true);
@@ -1483,6 +1522,15 @@ class _ChatInputBarState extends State<ChatInputBar>
         _canUseQuickReplies) {
       _adoptQuickReplyCache(rebuild: false);
       unawaited(_loadQuickReplies(userInitiated: false));
+    }
+    if (!oldWidget.simpleMode && widget.simpleMode && _panel == _Panel.format) {
+      // Simple mode has no format button to close the docked format panel;
+      // formatting stays in the selection menu.
+      _panel = _Panel.none;
+      _formatRange = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onPanelGeometryChanged?.call();
+      });
     }
   }
 
@@ -1518,6 +1566,7 @@ class _ChatInputBarState extends State<ChatInputBar>
     _desktopSendOptionsMenu?.dismiss();
     _desktopSendOptionsMenu = null;
     _discardPendingClipboardAttachments();
+    _discardVoiceDraft(rebuild: false);
     _aiReplyGeneration++;
     if (_activeAiReplyProvider case final HostedAiReplyProvider hosted) {
       hosted.close();
@@ -1539,6 +1588,7 @@ class _ChatInputBarState extends State<ChatInputBar>
     _panelSearch
       ..removeListener(_queuePanelSearch)
       ..dispose();
+    _simpleMorePanelScroll.dispose();
     _focus.dispose();
     _recTimer?.cancel();
     _recProgress?.cancel();
@@ -1777,6 +1827,7 @@ class _ChatInputBarState extends State<ChatInputBar>
     setState(() {
       _panel = next;
       _quickReplyContextVisible = false;
+      _voiceInlineError = _VoiceInlineError.none;
     });
     widget.onPanelGeometryChanged?.call();
   }
@@ -1931,15 +1982,24 @@ class _ChatInputBarState extends State<ChatInputBar>
       }
       if (_voiceDisposed || !mounted) return;
       if (!status.isGranted) {
-        showToast(
-          context,
-          AppStrings.t(
+        // The open panel explains the denial inline and offers Settings; it
+        // never opens system Settings without the user's press.
+        if (_showsMobileVoicePanel) {
+          _setVoiceInlineError(
             status.isPermanentlyDenied
-                ? AppStringKeys.composerMicrophonePermissionSettings
-                : AppStringKeys.composerMicrophonePermissionRequired,
-          ),
-        );
-        if (status.isPermanentlyDenied) unawaited(openAppSettings());
+                ? _VoiceInlineError.microphoneSettings
+                : _VoiceInlineError.microphoneRequired,
+          );
+        } else {
+          showToast(
+            context,
+            AppStrings.t(
+              status.isPermanentlyDenied
+                  ? AppStringKeys.composerMicrophonePermissionSettings
+                  : AppStringKeys.composerMicrophonePermissionRequired,
+            ),
+          );
+        }
         return;
       }
       recorder =
@@ -2021,7 +2081,8 @@ class _ChatInputBarState extends State<ChatInputBar>
     if (_voiceDisposed ||
         _voiceStop != null ||
         _recording ||
-        _desktopVoiceDraft != null) {
+        _desktopVoiceDraft != null ||
+        (_showsMobileVoicePanel && _composerAttachmentWaiting)) {
       return Future<void>.value();
     }
     final pending = _voiceStart;
@@ -2054,8 +2115,35 @@ class _ChatInputBarState extends State<ChatInputBar>
 
   void _showRecordingError() {
     if (mounted && !_voiceDisposed && _panel == _Panel.voice) {
+      if (!_voiceUsesDesktopRecorder) {
+        _setVoiceInlineError(_VoiceInlineError.failed);
+        return;
+      }
       showToast(context, AppStrings.t(AppStringKeys.composerRecordingFailed));
     }
+  }
+
+  bool get _showsMobileVoicePanel =>
+      _panel == _Panel.voice && !_voiceUsesDesktopRecorder;
+
+  /// Shows [error] in the mobile panel's status line until the next press on
+  /// the record button, a panel switch, or the composer closing.
+  void _setVoiceInlineError(_VoiceInlineError error) {
+    if (!mounted || _voiceDisposed || !_showsMobileVoicePanel) return;
+    // A live recording keeps its status line; the failed action (pause or
+    // resume) leaves the recording as it was, so only the haptic reports it.
+    if (_recording) {
+      unawaited(HapticFeedback.heavyImpact());
+      return;
+    }
+    if (_voiceInlineError == error) return;
+    setState(() => _voiceInlineError = error);
+    unawaited(HapticFeedback.heavyImpact());
+  }
+
+  void _clearVoiceInlineError() {
+    if (_voiceInlineError == _VoiceInlineError.none) return;
+    setState(() => _voiceInlineError = _VoiceInlineError.none);
   }
 
   Future<void> _startRec() async {
@@ -2066,14 +2154,18 @@ class _ChatInputBarState extends State<ChatInputBar>
     final r = _recorder;
     if (r == null || _recording) return;
     final dir = await getTemporaryDirectory();
+    // Apple's AAC encoder rejects anything below 32 kbps at 48 kHz, and
+    // AVAudioRecorder then records nothing without reporting an error, so
+    // AAC gets an explicit 32 kbps (the macOS recorder's setting). Opus keeps
+    // the plugin's 16 kbps default.
     const candidates = [
-      (Codec.opusOGG, 'ogg'),
-      (Codec.opusWebM, 'webm'),
-      (Codec.aacADTS, 'aac'),
-      (Codec.aacMP4, 'm4a'),
+      (Codec.opusOGG, 'ogg', 16000),
+      (Codec.opusWebM, 'webm', 16000),
+      (Codec.aacMP4, 'm4a', 32000),
+      (Codec.aacADTS, 'aac', 32000),
     ];
     var started = false;
-    for (final (codec, extension) in candidates) {
+    for (final (codec, extension, bitRate) in candidates) {
       if (!_canStartHeldRecording) return;
       try {
         if (!await r.isEncoderSupported(codec)) continue;
@@ -2081,7 +2173,12 @@ class _ChatInputBarState extends State<ChatInputBar>
         final path =
             '${dir.path}/voice_${DateTime.now().microsecondsSinceEpoch}.$extension';
         _recPath = path;
-        await r.startRecorder(toFile: path, codec: codec, sampleRate: 48000);
+        await r.startRecorder(
+          toFile: path,
+          codec: codec,
+          sampleRate: 48000,
+          bitRate: bitRate,
+        );
         started = true;
         break;
       } catch (_) {
@@ -2101,6 +2198,7 @@ class _ChatInputBarState extends State<ChatInputBar>
     }
     if (_voiceDisposed || !mounted) return;
     setState(() => _recording = true);
+    unawaited(HapticFeedback.mediumImpact());
     await _recProgress?.cancel();
     final clock = VoiceRecordingClock();
     _recProgress = r.onProgress?.listen((event) {
@@ -2113,7 +2211,11 @@ class _ChatInputBarState extends State<ChatInputBar>
       }
       _recTick.value = (
         elapsed: _elapsed,
-        levels: _recLevels.reversed.take(36).toList().reversed.toList(),
+        levels: _recLevels.reversed
+            .take(_mobileMeterBars)
+            .toList()
+            .reversed
+            .toList(),
       );
     });
     _recTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
@@ -2251,15 +2353,13 @@ class _ChatInputBarState extends State<ChatInputBar>
       }
       if (_voiceDisposed || !mounted) return;
       if (!cancelled && duration >= 1 && url == null) _showRecordingError();
-      _elapsed = 0;
-      _recLevels.clear();
-      _recTick.value = (elapsed: 0.0, levels: const <double>[]);
+      _resetRecordingMeter();
       return;
     }
     if (!mounted || _voiceDisposed) return;
     if (_voiceUsesDesktopRecorder) {
       setState(
-        () => _desktopVoiceDraft = VoiceNotePreviewResult(
+        () => _desktopVoiceDraft = VoiceNoteDraft(
           path: url,
           duration: duration,
           waveform: encodeTelegramWaveform(levels),
@@ -2268,37 +2368,22 @@ class _ChatInputBarState extends State<ChatInputBar>
       );
       await _sendDesktopVoiceDraft();
     } else {
-      final result = await Navigator.of(context).push<VoiceNotePreviewResult>(
-        MaterialPageRoute(
-          builder: (_) => VoiceNotePreviewView(
-            path: url,
-            duration: duration,
-            levels: levels,
-            allowWhenOnline: target.canSendWhenOnline,
-            effects: target.availableMessageEffects,
-          ),
-        ),
-      );
-      if (result == null) {
+      // The draft is the preview: the panel closes, the keyboard stays down,
+      // and the recording waits above the field until it is sent or deleted.
+      if (_composerAttachmentWaiting) {
         await _deleteTempFile(url);
+        if (_voiceDisposed || !mounted) return;
+        _resetRecordingMeter();
         return;
       }
-      if (_voiceDisposed || !mounted || !identical(target, vm)) return;
-      final sent = await target.sendVoice(
-        result.path,
-        result.duration,
-        waveform: result.waveform,
-        sendConfiguration: result.sendConfiguration,
+      _voiceDraft = ComposerVoiceDraft(
+        path: url,
+        duration: duration,
+        levels: levels,
       );
-      if (!mounted || _voiceDisposed) return;
-      if (sent) {
-        _finishPanelSend();
-      } else {
-        showToast(
-          context,
-          AppStrings.t(AppStringKeys.topicPostContentActionFailed),
-        );
-      }
+      // The draft holds its own copy; the next recording starts from zero.
+      _resetRecordingMeter();
+      _setPanel(_Panel.none);
     }
   }
 
@@ -2350,11 +2435,140 @@ class _ChatInputBarState extends State<ChatInputBar>
     }
   }
 
+  /// Whether a voice draft or pasted pictures wait above the field. Only one
+  /// attachment kind waits at a time.
+  bool get _composerAttachmentWaiting =>
+      _voiceDraft != null || _pendingClipboardAttachments.isNotEmpty;
+
+  /// Deletes the waiting phone recording: playback stops, its file goes and
+  /// the card collapses. The caption text stays.
+  void _discardVoiceDraft({bool rebuild = true}) {
+    final draft = _voiceDraft;
+    if (draft == null) return;
+    _voiceDraft = null;
+    // A send in flight still owns the file; it cleans up when it settles.
+    if (!draft.sending) unawaited(_deleteTempFile(draft.path));
+    draft.dispose();
+    if (rebuild && mounted && !_voiceDisposed) {
+      setState(() {});
+      widget.onPanelGeometryChanged?.call();
+    }
+  }
+
+  bool _voiceDraftIsCurrent(ComposerVoiceDraft draft, ChatViewModel target) =>
+      mounted &&
+      !_voiceDisposed &&
+      identical(_voiceDraft, draft) &&
+      identical(target, vm);
+
+  /// Sends the waiting recording as one voice message with the field's text
+  /// as its caption: the length and paid-message checks, the trim export,
+  /// then [ChatViewModel.sendVoice]. A failure keeps the recording for a
+  /// retry and says so under the card.
+  Future<void> _sendVoiceDraft({
+    MessageSendConfiguration sendConfiguration =
+        const MessageSendConfiguration(),
+  }) async {
+    final draft = _voiceDraft;
+    if (draft == null || draft.sending) return;
+    final target = vm;
+    if (!_canSendVoiceNotes) {
+      // Voice messages stopped being allowed here (a restriction error or a
+      // permission change): a retry says so on the card instead of nothing.
+      unawaited(draft.pause());
+      draft.markFailed();
+      setState(() {});
+      return;
+    }
+    draft.sending = true;
+    setState(() {});
+    unawaited(draft.pause());
+    TrimmedVoiceNote? exported;
+    var attempted = false;
+    var sent = false;
+    try {
+      sent = await () async {
+        final canAttemptSend = await target.prepareMessageSend();
+        if (!mounted ||
+            !canAttemptSend ||
+            !_voiceDraftIsCurrent(draft, target)) {
+          return false;
+        }
+        final (caption, entities) = _controller.toFormatted();
+        final captionLimit = await target.messageCaptionLengthLimit();
+        if (!mounted || !_voiceDraftIsCurrent(draft, target)) return false;
+        if (telegramUtf8CharacterCount(caption.trim()) > captionLimit) {
+          showToast(
+            context,
+            AppStrings.t(AppStringKeys.composerCaptionTooLong, {
+              'value1': '$captionLimit',
+            }),
+          );
+          return false;
+        }
+        if (target.requiresPaidMessage) {
+          final ok = await _confirmPaidMessageSend();
+          if (!ok || !_voiceDraftIsCurrent(draft, target)) return false;
+        }
+        attempted = true;
+        final file = exported = await draft.export();
+        if (!_voiceDraftIsCurrent(draft, target)) return false;
+        return target.sendVoice(
+          file.path,
+          file.durationSeconds,
+          waveform: encodeTelegramWaveform(draft.trimmedLevels()),
+          caption: caption,
+          captionEntities: entities,
+          sendConfiguration: sendConfiguration,
+          // The card's own error line reports a plain failure.
+          reportGenericFailure: false,
+        );
+      }();
+    } catch (error) {
+      debugPrint('Failed to send the voice draft: $error');
+    }
+    final exportedPath = exported?.path;
+    final trimmedCopy = exportedPath != null && exportedPath != draft.path
+        ? exportedPath
+        : null;
+    if (sent) {
+      // TDLib uploads the sent file after accepting the message, so only an
+      // original that a trimmed copy replaced can go.
+      if (trimmedCopy != null) unawaited(_deleteTempFile(draft.path));
+      if (identical(_voiceDraft, draft)) _voiceDraft = null;
+      draft.dispose();
+    } else {
+      if (trimmedCopy != null) unawaited(deleteExportedVoiceNote(trimmedCopy));
+      if (!identical(_voiceDraft, draft)) {
+        // The composer let go of the draft while it was sending.
+        unawaited(_deleteTempFile(draft.path));
+      } else if (attempted) {
+        draft.markFailed();
+      } else {
+        draft.sending = false;
+      }
+    }
+    if (!mounted || _voiceDisposed || !identical(target, vm)) return;
+    setState(() {});
+    if (sent) {
+      widget.onPanelGeometryChanged?.call();
+      _controller.clear();
+      widget.onMessageSent();
+    }
+  }
+
+  void _resetRecordingMeter() {
+    _elapsed = 0;
+    _recLevels.clear();
+    _recTick.value = (elapsed: 0.0, levels: const <double>[]);
+  }
+
   void _clearVoicePresses() {
     _desktopSpaceHeld = false;
     _desktopPointerHeld = false;
     _mobilePointerHeld = false;
     _voicePointerId = null;
+    _lockedStopPointerId = null;
   }
 
   void _cancelVoiceRecording() {
@@ -2368,6 +2582,10 @@ class _ChatInputBarState extends State<ChatInputBar>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_voiceDraft?.pause());
+    }
     // A held gesture can lose its release when the app loses focus. A locked
     // mobile recording is intentional and must not be discarded by a system
     // permission sheet, notification, or brief app switch.
@@ -2570,6 +2788,10 @@ class _ChatInputBarState extends State<ChatInputBar>
       } catch (error) {
         if (mounted) showToast(context, '$error');
       }
+      return;
+    }
+    if (_voiceDraft != null) {
+      await _sendVoiceDraft();
       return;
     }
     if (_pendingClipboardAttachments.isNotEmpty) {
@@ -3177,6 +3399,10 @@ class _ChatInputBarState extends State<ChatInputBar>
   }
 
   Future<void> _showTextSendOptions() async {
+    // The options apply to what waited when they were opened: a chat switch,
+    // or a voice draft sent, deleted or recorded meanwhile, drops them.
+    final target = vm;
+    final draft = _voiceDraft;
     MessageSendConfiguration? configuration;
     if (_usesNativeDesktopComposer(context)) {
       _hideDesktopPopovers();
@@ -3199,14 +3425,23 @@ class _ChatInputBarState extends State<ChatInputBar>
         _desktopSendOptionsMenu = null;
       }
     } else {
+      if (draft?.sending ?? false) return;
       configuration = await showMessageSendOptionsSheet(
         context,
-        allowWhenOnline: widget.vm.canSendWhenOnline,
-        effects: widget.vm.availableMessageEffects,
+        allowWhenOnline: target.canSendWhenOnline,
+        // Telegram takes View Once and self-destructing voice messages only
+        // in one-on-one chats with a person.
+        voiceOptions: draft != null && target.canSendSelfDestructingMedia,
+        effects: target.availableMessageEffects,
         onOpenScheduledMessages: _openScheduledMessages,
       );
     }
-    if (!mounted || configuration == null) return;
+    if (!mounted || configuration == null || !identical(target, vm)) return;
+    if (!identical(draft, _voiceDraft)) return;
+    if (draft != null && vm.editingMessage == null) {
+      await _sendVoiceDraft(sendConfiguration: configuration);
+      return;
+    }
     if (_pendingClipboardAttachments.isNotEmpty) {
       await _sendPendingClipboardAttachments(sendConfiguration: configuration);
       return;
@@ -3319,6 +3554,10 @@ class _ChatInputBarState extends State<ChatInputBar>
   }
 
   Future<void> _handlePaste([ContextMenuButtonItem? pasteItem]) async {
+    // The field is read-only while a voice draft sends, and the text it
+    // holds is cleared once the send lands.
+    bool voiceDraftSending() => _voiceDraft?.sending ?? false;
+    if (voiceDraftSending()) return;
     if (vm.editingMessage == null) {
       if (_usesNativeDesktopComposer(context)) {
         if (await _queueDesktopClipboardImages()) return;
@@ -3337,6 +3576,7 @@ class _ChatInputBarState extends State<ChatInputBar>
     }
 
     final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted || voiceDraftSending()) return;
     final text = clipboard?.text;
     if (text != null && text.isNotEmpty) {
       _controller.insertText(text);
@@ -3586,10 +3826,12 @@ class _ChatInputBarState extends State<ChatInputBar>
         replyKeyboard != null &&
         _replyKeyboardVisible &&
         !_hasText &&
-        _pendingClipboardAttachments.isEmpty;
+        _pendingClipboardAttachments.isEmpty &&
+        _voiceDraft == null;
     final bottomSafeArea = MediaQuery.paddingOf(context).bottom;
     final mediaPanelVisible =
         _panel == _Panel.emoji || _panel == _Panel.sticker;
+    final simpleComposer = !desktopComposer && widget.simpleMode;
     final panelSurfaceVisible =
         editingMessage == null &&
         !mediaPanelVisible &&
@@ -3622,6 +3864,8 @@ class _ChatInputBarState extends State<ChatInputBar>
                 if (editingMessage == null &&
                     _pendingClipboardAttachments.isNotEmpty)
                   _clipboardAttachmentStrip(desktop: desktopComposer),
+                if (!desktopComposer)
+                  _voiceDraftSlot(visible: editingMessage == null),
                 if (desktopComposer) ...[
                   if (editingMessage == null)
                     _desktopIconStrip(
@@ -3636,6 +3880,15 @@ class _ChatInputBarState extends State<ChatInputBar>
                     ),
                   if (replyKeyboardPanelVisible)
                     _replyKeyboardPanel(replyKeyboard),
+                ] else if (simpleComposer) ...[
+                  // One row replaces the input row and the icon strip.
+                  _inputRow(
+                    replyKeyboard,
+                    aiSettings: aiSettings,
+                    simple: true,
+                  ),
+                  if (replyKeyboardPanelVisible)
+                    _replyKeyboardPanel(replyKeyboard),
                 ] else ...[
                   _inputRow(replyKeyboard, aiSettings: aiSettings),
                   if (replyKeyboardPanelVisible)
@@ -3646,7 +3899,7 @@ class _ChatInputBarState extends State<ChatInputBar>
                 if (editingMessage == null &&
                     !desktopComposer &&
                     _panel == _Panel.function)
-                  _functionPanel(),
+                  simpleComposer ? _simpleMorePanel() : _functionPanel(),
                 if (editingMessage == null &&
                     !desktopComposer &&
                     _panel == _Panel.format)
@@ -4283,6 +4536,44 @@ class _ChatInputBarState extends State<ChatInputBar>
           );
         },
       ),
+    );
+  }
+
+  /// The waiting voice draft's slot above the field. The card grows and fades
+  /// in, and collapses when it is sent or deleted; instantly with Reduce
+  /// Motion. It hides while a message is being edited and returns afterwards.
+  Widget _voiceDraftSlot({required bool visible}) {
+    final draft = visible ? _voiceDraft : null;
+    final reduceMotion = AppMotion.isReduced(context);
+    return AnimatedSwitcher(
+      duration: reduceMotion
+          ? Duration.zero
+          : const Duration(milliseconds: 200),
+      reverseDuration: reduceMotion
+          ? Duration.zero
+          : const Duration(milliseconds: 160),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeOutCubic,
+      transitionBuilder: (child, animation) => FadeTransition(
+        opacity: animation,
+        child: SizeTransition(
+          sizeFactor: animation,
+          alignment: Alignment.bottomCenter,
+          child: child,
+        ),
+      ),
+      layoutBuilder: (current, previous) => Stack(
+        alignment: Alignment.bottomCenter,
+        children: [...previous, ?current],
+      ),
+      child: draft == null
+          ? const SizedBox(width: double.infinity)
+          : ComposerVoiceDraftCard(
+              draft: draft,
+              onDelete: () {
+                if (!draft.sending) _discardVoiceDraft();
+              },
+            ),
     );
   }
 
@@ -5329,7 +5620,13 @@ class _ChatInputBarState extends State<ChatInputBar>
   }
 
   void _handleEmptyInputTap() {
-    if (_hasText || !_canUseQuickReplies || _replyKeyboardVisible) return;
+    // With a voice draft waiting, the tap starts its caption.
+    if (_hasText ||
+        _voiceDraft != null ||
+        !_canUseQuickReplies ||
+        _replyKeyboardVisible) {
+      return;
+    }
     if (_quickReplyContextVisible) {
       setState(() => _quickReplyContextVisible = false);
       return;
@@ -5581,15 +5878,27 @@ class _ChatInputBarState extends State<ChatInputBar>
     return math.max(lineHeight, availableHeight * .35);
   }
 
+  /// The phone input row, or the desktop editor row when [desktop].
+  ///
+  /// With [simple] it is simple mode's single row: the Mic cell leads, and
+  /// the Emoji and More cells and the Send button trail the field. In a bot
+  /// chat the bot's menu cell takes the Mic's place, and voice opens from
+  /// the More panel instead.
   Widget _inputRow(
     _ReplyKeyboard? replyKeyboard, {
     required AiSettingsController? aiSettings,
     bool desktop = false,
+    bool simple = false,
   }) {
     final c = context.colors;
     final editing = vm.editingMessage != null;
+    final voiceDraft = editing ? null : _voiceDraft;
+    final sendingVoiceDraft = voiceDraft?.sending ?? false;
     final hasText =
-        _hasText || editing || _pendingClipboardAttachments.isNotEmpty;
+        _hasText ||
+        editing ||
+        _pendingClipboardAttachments.isNotEmpty ||
+        voiceDraft != null;
     final replyTarget = _currentAiReplyTarget();
     final aiReplyWorking =
         replyTarget != null && _aiReplyWorkingTargetId == replyTarget.id;
@@ -5606,10 +5915,16 @@ class _ChatInputBarState extends State<ChatInputBar>
       _desktopComposerCanvasHeight,
       viewportHeight: MediaQuery.sizeOf(context).height,
     );
-    return Padding(
+    final simpleBot = simple && vm.peerIsBot;
+    Widget rowFor({required bool showLeadingCell}) => Padding(
       key: desktop ? const ValueKey('desktopComposerInput') : null,
       padding: desktop
           ? const EdgeInsets.fromLTRB(18, 2, 18, 12)
+          : simple
+          ? const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xs,
+              vertical: AppMetric.simpleComposerBarInset,
+            )
           : const EdgeInsets.only(left: 12, right: 12, top: 8, bottom: 6),
       child: Stack(
         key: desktop ? const ValueKey('desktopComposerInputStack') : null,
@@ -5621,6 +5936,10 @@ class _ChatInputBarState extends State<ChatInputBar>
                 : null,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              if (simpleBot)
+                _simpleBotMenuSlot(visible: showLeadingCell, editing: editing)
+              else if (simple)
+                _simpleMicSlot(visible: showLeadingCell, editing: editing),
               // Desktop utility actions live in the toolbar so the editor
               // keeps the entire composer width.
               if (!desktop &&
@@ -5629,6 +5948,7 @@ class _ChatInputBarState extends State<ChatInputBar>
                 _replyKeyboardMiniAppAction(replyKeyboard, webAppButton),
                 const SizedBox(width: 8),
               ] else if (!desktop &&
+                  !simpleBot &&
                   !editing &&
                   (vm.peerIsBot || _guestQueries.isNotEmpty)) ...[
                 Semantics(
@@ -5678,7 +5998,7 @@ class _ChatInputBarState extends State<ChatInputBar>
                             : BoxDecoration(
                                 color: c.searchFill,
                                 borderRadius: BorderRadius.circular(
-                                  AppRadius.lg,
+                                  simple ? AppRadius.control : AppRadius.lg,
                                 ),
                               ),
                         padding: desktop
@@ -5793,6 +6113,9 @@ class _ChatInputBarState extends State<ChatInputBar>
                                       child: TextField(
                                         controller: _controller,
                                         focusNode: _focus,
+                                        // The caption is fixed while its
+                                        // voice message is on the way.
+                                        readOnly: sendingVoiceDraft,
                                         onTap: _handleEmptyInputTap,
                                         // Submit from editing completion without
                                         // onSubmitted: Flutter restarts the input
@@ -5909,17 +6232,22 @@ class _ChatInputBarState extends State<ChatInputBar>
                                                           ).systemTextScaler,
                                                     ),
                                                 child:
-                                                    AdaptiveTextSelectionToolbar.buttonItems(
+                                                    AppTextSelectionToolbar.fromButtonItems(
+                                                      context: context,
                                                       anchors: editableTextState
                                                           .contextMenuAnchors,
-                                                      buttonItems: items,
+                                                      items: items,
                                                     ),
                                               );
                                             },
                                         decoration: InputDecoration(
-                                          hintText: AppStringKeys
-                                              .chatMessageInputPlaceholder
-                                              .l10n(context),
+                                          hintText:
+                                              (voiceDraft != null
+                                                      ? AppStringKeys
+                                                            .composerVoiceCaptionPlaceholder
+                                                      : AppStringKeys
+                                                            .chatMessageInputPlaceholder)
+                                                  .l10n(context),
                                           border: InputBorder.none,
                                           isCollapsed: true,
                                           contentPadding: desktop && hasText
@@ -5976,114 +6304,22 @@ class _ChatInputBarState extends State<ChatInputBar>
                   ],
                 ),
               ),
-              if (hasText && !desktop) ...[
+              if (simple)
+                _simpleTrailingCells(
+                  editing: editing,
+                  voiceInMore: simpleBot,
+                  send: hasText
+                      ? _phoneSendButton(
+                          editing: editing,
+                          sendingVoiceDraft: sendingVoiceDraft,
+                        )
+                      : null,
+                )
+              else if (hasText && !desktop) ...[
                 const SizedBox(width: 8),
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (!editing &&
-                        !desktop &&
-                        vm.canUseAiComposition &&
-                        _aiDraftEligible) ...[
-                      Semantics(
-                        button: true,
-                        label: AppStringKeys.telegramAiEditorTelegramAIEditor
-                            .l10n(context),
-                        child: GestureDetector(
-                          key: const ValueKey('composerAiPrefixButton'),
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => unawaited(_openTelegramAiEditor()),
-                          child: Container(
-                            width: 36,
-                            height: 36,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: AppTheme.brand.withValues(alpha: 0.10),
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: AppTheme.brand.withValues(alpha: 0.34),
-                                width: 0.75,
-                              ),
-                            ),
-                            child: AppIcon(
-                              HeroAppIcons.palette,
-                              key: const ValueKey('composerAiStyleIcon'),
-                              size: 19,
-                              color: AppTheme.brand,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                    ],
-                    AppInteractiveSurface(
-                      key: const ValueKey('composerSendButton'),
-                      semanticLabel:
-                          (editing
-                                  ? AppStringKeys.messageActionEdit
-                                  : AppStringKeys.composerSend)
-                              .l10n(context),
-                      enabled: _aiReplyWorkingTargetId == null,
-                      onTap: () => unawaited(_sendCurrentText()),
-                      onLongPress: _aiReplyWorkingTargetId != null
-                          ? null
-                          : editing
-                          ? null
-                          : () => unawaited(_showTextSendOptions()),
-                      borderRadius: BorderRadius.circular(24),
-                      child: SizedBox(
-                        width: vm.requiresPaidMessage ? 58 : 44,
-                        height: 44,
-                        child: Center(
-                          child: Container(
-                            width: vm.requiresPaidMessage ? 58 : 36,
-                            height: 36,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: _aiReplyWorkingTargetId != null
-                                  ? AppTheme.brand.withValues(alpha: 0.42)
-                                  : editing
-                                  ? AppTheme.cloverGreen
-                                  : AppTheme.brand,
-                              shape: BoxShape.circle,
-                            ),
-                            child: editing
-                                ? const AppIcon(
-                                    HeroAppIcons.check,
-                                    size: 18,
-                                    color: Colors.white,
-                                  )
-                                : vm.requiresPaidMessage
-                                ? Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const AppIcon(
-                                        HeroAppIcons.solidStar,
-                                        size: 14,
-                                        color: Colors.white,
-                                      ),
-                                      const SizedBox(width: 3),
-                                      Text(
-                                        'x${vm.paidMessageStarCount}',
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    ],
-                                  )
-                                : const AppIcon(
-                                    HeroAppIcons.solidPaperPlane,
-                                    size: 17,
-                                    color: Colors.white,
-                                  ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                _phoneSendButton(
+                  editing: editing,
+                  sendingVoiceDraft: sendingVoiceDraft,
                 ),
               ],
             ],
@@ -6098,7 +6334,153 @@ class _ChatInputBarState extends State<ChatInputBar>
         ],
       ),
     );
+    if (!simple) return rowFor(showLeadingCell: false);
+    final leadingActionWidth = webAppButton != null && replyKeyboard != null
+        ? _replyKeyboardMiniAppActionMaxWidth + AppSpacing.md
+        : !simpleBot && !editing && (vm.peerIsBot || _guestQueries.isNotEmpty)
+        ? AppMetric.hitTarget + AppSpacing.md
+        : 0.0;
+    return LayoutBuilder(
+      builder: (_, constraints) => rowFor(
+        showLeadingCell:
+            (simpleBot || _canSendVoiceNotes) &&
+            _simpleComposerFitsLeadingCell(
+              width: constraints.maxWidth,
+              hasText: hasText,
+              leadingActionWidth: leadingActionWidth,
+            ),
+      ),
+    );
   }
+
+  /// The phone Send button, with the AI-style prefix stacked above it when
+  /// the draft is eligible. Shared unchanged by the standard and simple rows.
+  Widget _phoneSendButton({
+    required bool editing,
+    required bool sendingVoiceDraft,
+  }) {
+    final c = context.colors;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (!editing && vm.canUseAiComposition && _aiDraftEligible) ...[
+          Semantics(
+            button: true,
+            label: AppStringKeys.telegramAiEditorTelegramAIEditor.l10n(context),
+            child: GestureDetector(
+              key: const ValueKey('composerAiPrefixButton'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => unawaited(_openTelegramAiEditor()),
+              child: Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.10),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: AppTheme.brand.withValues(alpha: 0.34),
+                    width: 0.75,
+                  ),
+                ),
+                child: AppIcon(
+                  HeroAppIcons.palette,
+                  key: const ValueKey('composerAiStyleIcon'),
+                  size: 19,
+                  color: AppTheme.brand,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+        ],
+        Semantics(
+          // The long press as an action VoiceOver can reach.
+          customSemanticsActions:
+              _aiReplyWorkingTargetId != null || editing || sendingVoiceDraft
+              ? null
+              : {
+                  CustomSemanticsAction(
+                    label: AppStringKeys.messageSendOptionsTitle.l10n(context),
+                  ): () =>
+                      unawaited(_showTextSendOptions()),
+                },
+          child: AppInteractiveSurface(
+            key: const ValueKey('composerSendButton'),
+            semanticLabel:
+                (editing
+                        ? AppStringKeys.messageActionEdit
+                        : AppStringKeys.composerSend)
+                    .l10n(context),
+            enabled: _aiReplyWorkingTargetId == null,
+            onTap: () => unawaited(_sendCurrentText()),
+            onLongPress:
+                _aiReplyWorkingTargetId != null || editing || sendingVoiceDraft
+                ? null
+                : () => unawaited(_showTextSendOptions()),
+            borderRadius: BorderRadius.circular(24),
+            child: SizedBox(
+              width: _phoneSendSlotWidth,
+              height: 44,
+              child: Center(
+                child: Container(
+                  width: vm.requiresPaidMessage ? 58 : 36,
+                  height: 36,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _aiReplyWorkingTargetId != null
+                        ? AppTheme.brand.withValues(alpha: 0.42)
+                        : editing
+                        ? AppTheme.cloverGreen
+                        : AppTheme.brand,
+                    shape: BoxShape.circle,
+                  ),
+                  child: editing
+                      ? const AppIcon(
+                          HeroAppIcons.check,
+                          size: 18,
+                          color: Colors.white,
+                        )
+                      : sendingVoiceDraft
+                      ? AppActivityIndicator(size: 16, color: c.onAccent)
+                      : vm.requiresPaidMessage
+                      ? Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const AppIcon(
+                              HeroAppIcons.solidStar,
+                              size: 14,
+                              color: Colors.white,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              'x${vm.paidMessageStarCount}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        )
+                      : const AppIcon(
+                          HeroAppIcons.solidPaperPlane,
+                          size: 17,
+                          color: Colors.white,
+                        ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Width of the phone Send button's slot: wider for a paid message, whose
+  /// button also shows the price.
+  double get _phoneSendSlotWidth => vm.requiresPaidMessage ? 58 : 44;
 
   bool _usesNativeDesktopComposer(BuildContext context) {
     if (kIsWeb) return false;
@@ -6501,6 +6883,8 @@ class _ChatInputBarState extends State<ChatInputBar>
     );
   }
 
+  static const double _replyKeyboardMiniAppActionMaxWidth = 156;
+
   Widget _replyKeyboardMiniAppAction(
     _ReplyKeyboard keyboard,
     MessageButton button,
@@ -6515,7 +6899,9 @@ class _ChatInputBarState extends State<ChatInputBar>
         onTap: () => unawaited(_openReplyKeyboardWebApp(keyboard, button)),
         onLongPress: () => _showBotMenu(forceMenu: true),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 156),
+          constraints: const BoxConstraints(
+            maxWidth: _replyKeyboardMiniAppActionMaxWidth,
+          ),
           child: Container(
             height: 38,
             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -6988,11 +7374,11 @@ class _ChatInputBarState extends State<ChatInputBar>
             _panel == _Panel.emoji || _panel == _Panel.sticker,
             _toggleMediaPanel,
           ),
-          _icon(
-            HeroAppIcons.font,
+          _iconStripButton(
             AppStrings.t(AppStringKeys.composerFormat),
             _panel == _Panel.format,
             _toggleFormatPanel,
+            _formatButtonGlyph,
           ),
           _icon(
             _panel != _Panel.none
@@ -7017,6 +7403,20 @@ class _ChatInputBarState extends State<ChatInputBar>
     bool active,
     VoidCallback onTap,
   ) {
+    return _iconStripButton(
+      semanticLabel,
+      active,
+      onTap,
+      (color) => AppIcon(icon, size: 24, color: color),
+    );
+  }
+
+  Widget _iconStripButton(
+    String semanticLabel,
+    bool active,
+    VoidCallback onTap,
+    Widget Function(Color color) glyph,
+  ) {
     return Expanded(
       child: AppInteractiveSurface(
         semanticLabel: semanticLabel,
@@ -7026,15 +7426,318 @@ class _ChatInputBarState extends State<ChatInputBar>
         child: SizedBox(
           height: 44,
           child: Center(
-            child: AppIcon(
-              icon,
-              size: 24,
-              color: active ? AppTheme.brand : context.colors.textSecondary,
+            child: glyph(
+              active ? AppTheme.brand : context.colors.textSecondary,
             ),
           ),
         ),
       ),
     );
+  }
+
+  /// The format button's bold "A", in the platform UI face rather than the
+  /// chat font, at a fixed size like the icon glyphs beside it. The metrics
+  /// mirror Icon's: a 1.0 line split evenly keeps the cap height centred.
+  Widget _formatButtonGlyph(Color color) {
+    return Text(
+      'A',
+      textScaler: TextScaler.noScaling,
+      style: TextStyle(
+        inherit: false,
+        color: color,
+        fontFamily: AppFontChoice.system.fontFamily,
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+        height: 1,
+        leadingDistribution: TextLeadingDistribution.even,
+      ),
+    );
+  }
+
+  // MARK: - Simple mode row
+
+  /// Scale a simple-mode control grows from as it appears or swaps glyphs.
+  static const double _simpleComposerEnterScale = 0.85;
+
+  /// The narrow rule: while there is something to send, the leading cell
+  /// (the Mic, or a bot chat's menu cell) gives its room to the field once the
+  /// typing field would fall under [AppMetric.simpleComposerNarrowField]. The
+  /// empty row never drops it.
+  bool _simpleComposerFitsLeadingCell({
+    required double width,
+    required bool hasText,
+    required double leadingActionWidth,
+  }) {
+    if (!hasText) return true;
+    final typingField =
+        width -
+        2 * AppSpacing.xs -
+        2 * AppSpacing.xxs -
+        3 * AppMetric.simpleComposerCell -
+        _phoneSendSlotWidth -
+        leadingActionWidth;
+    return typingField >= AppMetric.simpleComposerNarrowField;
+  }
+
+  /// The simple row's leading slot: [cell] and its gap to the field or,
+  /// without the cell, the extra inset that keeps the field 12pt from the
+  /// edge. The narrow rule collapses and restores it in place.
+  Widget _simpleLeadingSlot({required bool visible, required Widget cell}) {
+    return AnimatedSize(
+      duration: AppMotion.duration(context, AppMotion.swap),
+      curve: Curves.easeOutCubic,
+      alignment: AlignmentDirectional.bottomEnd,
+      child: visible
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                cell,
+                const SizedBox(width: AppSpacing.xxs),
+              ],
+            )
+          : const SizedBox(width: AppSpacing.lg - AppSpacing.xs),
+    );
+  }
+
+  /// The Mic cell in the leading slot.
+  Widget _simpleMicSlot({required bool visible, required bool editing}) {
+    final voiceOpen = !editing && _panel == _Panel.voice;
+    return _simpleLeadingSlot(
+      visible: visible,
+      cell: _simpleComposerCell(
+        key: const ValueKey('composerSimpleVoiceButton'),
+        semanticLabel:
+            (voiceOpen
+                    ? AppStringKeys.composerShowKeyboard
+                    : AppStringKeys.voiceNotePreviewVoiceMessage)
+                .l10n(context),
+        open: voiceOpen,
+        enabled: !editing,
+        onTap: voiceOpen ? _showKeyboardFromSimplePanel : _openSimpleVoicePanel,
+        glyph: (color) => voiceOpen
+            ? AppKeyboardIcon(
+                key: const ValueKey('composerSimpleKeyboardGlyph'),
+                size: AppIconSize.simpleComposer,
+                color: color,
+              )
+            : AppIcon(
+                HeroAppIcons.microphone,
+                key: const ValueKey('composerSimpleVoiceGlyph'),
+                size: AppIconSize.simpleComposer,
+                color: color,
+              ),
+      ),
+    );
+  }
+
+  /// A bot chat's menu cell in the leading slot, where other chats have the
+  /// Mic: a slash for the command sheet, or a globe when the bot's menu
+  /// button is a Mini App. Tap and long press do what the bot button does.
+  Widget _simpleBotMenuSlot({required bool visible, required bool editing}) {
+    final menu = vm.botMenu;
+    final opensMiniApp = menu?.isWebApp ?? false;
+    return _simpleLeadingSlot(
+      visible: visible,
+      cell: _simpleComposerCell(
+        key: const ValueKey('composerSimpleBotMenuButton'),
+        semanticLabel: opensMiniApp && menu!.text.trim().isNotEmpty
+            ? menu.actionTitle
+            : AppStringKeys.chatInputBarOpenBotMenu.l10n(context),
+        open: false,
+        enabled: !editing,
+        onTap: _showBotMenu,
+        onLongPress: () => _showBotMenu(forceMenu: true),
+        glyph: (color) => AppIcon(
+          opensMiniApp ? HeroAppIcons.globe : HeroAppIcons.slash,
+          key: ValueKey(
+            opensMiniApp
+                ? 'composerSimpleBotMiniAppGlyph'
+                : 'composerSimpleBotCommandsGlyph',
+          ),
+          size: AppIconSize.simpleComposer,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  /// Emoji and More, always present, then [send] in its own slot while there
+  /// is something to send. The group resizes as Send comes and goes, so the
+  /// field's trailing edge moves instead of jumping. With [voiceInMore] the
+  /// voice panel opens from More, so while it is docked More carries its
+  /// keyboard glyph, as the Mic cell does elsewhere.
+  Widget _simpleTrailingCells({
+    required bool editing,
+    required Widget? send,
+    bool voiceInMore = false,
+  }) {
+    final reduceMotion = AppMotion.isReduced(context);
+    final mediaOpen =
+        !editing && (_panel == _Panel.emoji || _panel == _Panel.sticker);
+    final moreOpen = !editing && _panel == _Panel.function;
+    final voiceOpen = voiceInMore && !editing && _panel == _Panel.voice;
+    return AnimatedSize(
+      duration: AppMotion.duration(context, AppMotion.swap),
+      curve: Curves.easeOutCubic,
+      alignment: AlignmentDirectional.bottomStart,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          const SizedBox(width: AppSpacing.xxs),
+          _simpleComposerCell(
+            key: const ValueKey('composerSimpleEmojiButton'),
+            semanticLabel:
+                (mediaOpen
+                        ? AppStringKeys.composerShowKeyboard
+                        : AppStringKeys.composerEmoji)
+                    .l10n(context),
+            open: mediaOpen,
+            enabled: !editing,
+            onTap: mediaOpen
+                ? _showKeyboardFromSimplePanel
+                : _openSimpleMediaPanel,
+            glyph: (color) => mediaOpen
+                ? AppKeyboardIcon(
+                    key: const ValueKey('composerSimpleKeyboardGlyph'),
+                    size: AppIconSize.simpleComposer,
+                    color: color,
+                  )
+                : AppIcon(
+                    HeroAppIcons.faceSmile,
+                    key: const ValueKey('composerSimpleEmojiGlyph'),
+                    size: AppIconSize.simpleComposer,
+                    color: color,
+                  ),
+          ),
+          _simpleComposerCell(
+            key: const ValueKey('composerSimpleMoreButton'),
+            semanticLabel:
+                (voiceOpen
+                        ? AppStringKeys.composerShowKeyboard
+                        : moreOpen
+                        ? AppStringKeys.composerCloseMenu
+                        : AppStringKeys.composerMoreActions)
+                    .l10n(context),
+            open: moreOpen || voiceOpen,
+            enabled: !editing,
+            onTap: voiceOpen
+                ? _showKeyboardFromSimplePanel
+                : _toggleSimpleMorePanel,
+            glyph: (color) => voiceOpen
+                ? AppKeyboardIcon(
+                    key: const ValueKey('composerSimpleKeyboardGlyph'),
+                    size: AppIconSize.simpleComposer,
+                    color: color,
+                  )
+                : AppIcon(
+                    moreOpen
+                        ? HeroAppIcons.circleXmark
+                        : HeroAppIcons.circlePlus,
+                    key: ValueKey(
+                      moreOpen ? 'composerSimpleClose' : 'composerSimpleMore',
+                    ),
+                    size: AppIconSize.simpleComposer,
+                    color: color,
+                  ),
+          ),
+          if (send != null)
+            TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: 0, end: 1),
+              duration: AppMotion.swap,
+              curve: Curves.easeOutCubic,
+              builder: (_, progress, child) => Opacity(
+                opacity: progress,
+                child: reduceMotion
+                    ? child
+                    : Transform.scale(
+                        scale:
+                            _simpleComposerEnterScale +
+                            (1 - _simpleComposerEnterScale) * progress,
+                        child: child,
+                      ),
+              ),
+              child: send,
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// One square cell of the simple row. Its glyph is the cell's state cue:
+  /// while the cell's panel is docked the glyph swaps (to the keyboard, or to
+  /// a close mark) and the cell reports itself selected.
+  Widget _simpleComposerCell({
+    required Key key,
+    required String semanticLabel,
+    required bool open,
+    required bool enabled,
+    required VoidCallback onTap,
+    required Widget Function(Color color) glyph,
+    VoidCallback? onLongPress,
+  }) {
+    final c = context.colors;
+    final reduceMotion = AppMotion.isReduced(context);
+    final cell = AppInteractiveSurface(
+      key: key,
+      semanticLabel: semanticLabel,
+      selected: open,
+      enabled: enabled,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(AppRadius.control),
+      child: SizedBox.square(
+        dimension: AppMetric.simpleComposerCell,
+        child: Center(
+          child: AnimatedSwitcher(
+            duration: AppMotion.swap,
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeOutCubic,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: reduceMotion
+                  ? child
+                  : ScaleTransition(
+                      scale: Tween<double>(
+                        begin: _simpleComposerEnterScale,
+                        end: 1,
+                      ).animate(animation),
+                      child: child,
+                    ),
+            ),
+            // Editing has no docked panels, so the cells rest while it lasts.
+            child: glyph(enabled ? c.textPrimary : c.textTertiary),
+          ),
+        ),
+      ),
+    );
+    if (onLongPress == null) return cell;
+    // The long press as an action screen readers can reach.
+    return Semantics(onLongPress: enabled ? onLongPress : null, child: cell);
+  }
+
+  /// A simple-mode cell's keyboard glyph: closes its docked panel and brings
+  /// the keyboard back to the same draft.
+  void _showKeyboardFromSimplePanel() {
+    _setPanel(_Panel.none);
+    _focus.requestFocus();
+  }
+
+  // The simple row stays visible above the bot reply keyboard, so opening a
+  // panel from it folds that keyboard away: only one panel is ever docked.
+  void _openSimpleVoicePanel() {
+    _replyKeyboardVisible = false;
+    _toggleVoice();
+  }
+
+  void _openSimpleMediaPanel() {
+    _replyKeyboardVisible = false;
+    _toggleMediaPanel();
+  }
+
+  void _toggleSimpleMorePanel() {
+    if (_panel != _Panel.function) _replyKeyboardVisible = false;
+    _toggle(_Panel.function);
   }
 
   // MARK: - Media pickers
@@ -7206,6 +7909,7 @@ class _ChatInputBarState extends State<ChatInputBar>
   }
 
   Future<void> _recordVideoNote() async {
+    unawaited(_voiceDraft?.pause());
     try {
       final capture = await Navigator.of(context).push<VideoNoteCaptureResult>(
         MaterialPageRoute(
@@ -7364,6 +8068,16 @@ class _ChatInputBarState extends State<ChatInputBar>
   }
 
   Future<bool> _queueClipboardImageData(DesktopClipboardImageData image) async {
+    if (_voiceDraft != null) {
+      // Only one attachment kind waits at a time; the picture is not added.
+      if (mounted) {
+        showToast(
+          context,
+          AppStrings.t(AppStringKeys.composerAttachmentWaiting),
+        );
+      }
+      return true;
+    }
     final remaining =
         _maximumPendingClipboardAttachments -
         _pendingClipboardAttachments.length;
@@ -7405,9 +8119,11 @@ class _ChatInputBarState extends State<ChatInputBar>
     }
     if (result.attachments.isNotEmpty) {
       _hideDesktopPopovers(rebuild: false);
+      // Through _setPanel, so a recording in the voice panel is cancelled
+      // rather than left running behind the pictures.
+      _setPanel(_Panel.none);
       setState(() {
         _pendingClipboardAttachments.addAll(result.attachments);
-        _panel = _Panel.none;
         _replyKeyboardVisible = false;
         _quickReplyContextVisible = false;
       });
@@ -8067,6 +8783,198 @@ class _ChatInputBarState extends State<ChatInputBar>
     );
   }
 
+  /// Simple mode's More panel: the strip's tools and the function panel's in
+  /// one vertically scrolling grid, with no paging. Every row is as tall as
+  /// its tallest label, so long translations and large text wrap instead of
+  /// truncating; at extreme text sizes the grid becomes a one-column list.
+  Widget _simpleMorePanel() {
+    final items = <(AppIconData, String, VoidCallback)>[
+      (HeroAppIcons.image, AppStringKeys.composerImage, _pickPhotos),
+      if (widget.phoneStripForTesting || composerShowsCameraIcon())
+        (HeroAppIcons.camera, AppStringKeys.composerCamera, _takePhoto),
+      // A bot chat's leading cell is its menu button, so voice opens here.
+      if (vm.peerIsBot && _canSendVoiceNotes)
+        (
+          HeroAppIcons.microphone,
+          AppStringKeys.voiceNotePreviewVoiceMessage,
+          _openSimpleVoicePanel,
+        ),
+      if (widget.showCallAction && !Platform.isMacOS)
+        (
+          HeroAppIcons.phone,
+          vm.isGroup
+              ? AppStringKeys.composerGroupVoiceCall
+              : AppStringKeys.composerVoiceCall,
+          () => widget.onStartCall(false),
+        ),
+      if (!Platform.isMacOS)
+        (
+          HeroAppIcons.locationDot,
+          AppStringKeys.composerLocation,
+          _sendLocation,
+        ),
+      (HeroAppIcons.folder, AppStringKeys.topicPostContentFile, _pickFile),
+      (HeroAppIcons.idBadge, AppStringKeys.composerContact, _sendContact),
+      if (!vm.isDirectMessagesGroup)
+        (HeroAppIcons.grip, AppStringKeys.composerPoll, _createPoll),
+      (
+        HeroAppIcons.clock,
+        AppStringKeys.messageSendOptionsScheduledMessages,
+        _openScheduledMessages,
+      ),
+      (HeroAppIcons.music, AppStringKeys.composerAudio, _pickAudio),
+      (
+        HeroAppIcons.penToSquare,
+        AppStringKeys.composerRichText,
+        _openRichTextComposer,
+      ),
+      if (!vm.isDirectMessagesGroup)
+        (
+          HeroAppIcons.listCheck,
+          AppStringKeys.composerChecklist,
+          _createChecklist,
+        ),
+      if (vm.isDirectMessagesGroup && !vm.isAdministeredDirectMessagesGroup)
+        (
+          HeroAppIcons.penToSquare,
+          AppStringKeys.suggestedPostComposerTitle,
+          _createSuggestedPost,
+        ),
+    ];
+    final c = context.colors;
+    final labelStyle = AppTextStyle.footnote(c.textPrimary).copyWith(
+      height:
+          AppMetric.simpleComposerPanelLabelLineHeight / AppTextSize.footnote,
+    );
+    final textScale =
+        MediaQuery.textScalerOf(context).scale(AppTextSize.footnote) /
+        AppTextSize.footnote;
+    final screenSize = MediaQuery.sizeOf(context);
+    // Large text grows the panel up to its share of the screen; the standard
+    // height stays the floor, so a short landscape screen keeps it too.
+    final panelHeight = math.max(
+      AppMetric.simpleComposerPanelHeight,
+      math.min(
+        AppMetric.simpleComposerPanelHeight * textScale,
+        screenSize.height * AppMetric.simpleComposerPanelMaxScreenFraction,
+      ),
+    );
+    return Container(
+      key: const ValueKey('composerSimpleMorePanel'),
+      width: double.infinity,
+      height: panelHeight,
+      color: _composerDockedSurfaceColor,
+      child: LayoutBuilder(
+        builder: (_, constraints) {
+          final width = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : screenSize.width;
+          final columns =
+              ((width - 2 * AppSpacing.lg) /
+                      (AppMetric.simpleComposerPanelCellMinWidth * textScale))
+                  .floor()
+                  .clamp(1, AppMetric.simpleComposerPanelMaxColumns);
+          return Scrollbar(
+            controller: _simpleMorePanelScroll,
+            child: SingleChildScrollView(
+              controller: _simpleMorePanelScroll,
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.lg,
+                vertical: AppSpacing.xxl,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (
+                    var start = 0;
+                    start < items.length;
+                    start += columns
+                  ) ...[
+                    if (start > 0) const SizedBox(height: AppSpacing.lg),
+                    if (columns == 1)
+                      _simpleMorePanelItem(
+                        items[start],
+                        labelStyle: labelStyle,
+                        listRow: true,
+                      )
+                    else
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (var column = 0; column < columns; column++)
+                            Expanded(
+                              child: start + column < items.length
+                                  ? _simpleMorePanelItem(
+                                      items[start + column],
+                                      labelStyle: labelStyle,
+                                    )
+                                  : const SizedBox.shrink(),
+                            ),
+                        ],
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// One More-panel tool: a bare line glyph over its full label, or, as a
+  /// [listRow], the glyph leading a left-aligned label.
+  Widget _simpleMorePanelItem(
+    (AppIconData, String, VoidCallback) item, {
+    required TextStyle labelStyle,
+    bool listRow = false,
+  }) {
+    final (icon, labelKey, action) = item;
+    final label = labelKey.l10n(context);
+    final glyph = SizedBox.square(
+      dimension: AppMetric.simpleComposerCell,
+      child: Center(
+        child: AppIcon(
+          icon,
+          size: AppIconSize.simpleComposerPanel,
+          color: context.colors.textPrimary,
+        ),
+      ),
+    );
+    return AppInteractiveSurface(
+      semanticLabel: label,
+      onTap: () {
+        _setPanel(_Panel.none);
+        action();
+      },
+      borderRadius: BorderRadius.circular(AppRadius.card),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+        child: listRow
+            ? ConstrainedBox(
+                constraints: const BoxConstraints(
+                  minHeight: AppMetric.simpleComposerPanelListRowHeight,
+                ),
+                child: Row(
+                  children: [
+                    glyph,
+                    const SizedBox(width: AppSpacing.lg),
+                    Expanded(child: Text(label, style: labelStyle)),
+                  ],
+                ),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  glyph,
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(label, textAlign: TextAlign.center, style: labelStyle),
+                ],
+              ),
+      ),
+    );
+  }
+
   // MARK: - Text format panel
 
   static const double _composerFormatPanelHeight = 268;
@@ -8140,11 +9048,14 @@ class _ChatInputBarState extends State<ChatInputBar>
     required bool selected,
   }) {
     final c = context.colors;
+    // Every ink is a theme token, so custom themes recolour the panel too.
+    // Disabled cells stay readable at full textSecondary, still clearly
+    // lighter than the textPrimary glyph of an enabled cell.
     final foreground = !enabled
-        ? c.textTertiary.withValues(alpha: 0.48)
+        ? c.textSecondary
         : selected
         ? AppTheme.brand
-        : c.textSecondary;
+        : c.textPrimary;
     return Semantics(
       button: true,
       enabled: enabled,
@@ -8170,7 +9081,7 @@ class _ChatInputBarState extends State<ChatInputBar>
                 border: Border.all(
                   color: selected
                       ? AppTheme.brand.withValues(alpha: 0.54)
-                      : c.divider,
+                      : c.textTertiary,
                 ),
               ),
               child: _formatActionGlyph(action, foreground),
@@ -8183,9 +9094,7 @@ class _ChatInputBarState extends State<ChatInputBar>
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 11,
-                color: enabled
-                    ? c.textSecondary
-                    : c.textTertiary.withValues(alpha: 0.48),
+                color: c.textSecondary,
                 decoration: TextDecoration.none,
               ),
             ),
@@ -8284,67 +9193,117 @@ class _ChatInputBarState extends State<ChatInputBar>
   }
 
   Widget _mediaKindSegmentControl() {
+    _ComposerSegment segment(_MediaKind kind, AppIconData icon, String label) =>
+        (
+          key: ValueKey('mediaSegment-${kind.name}'),
+          icon: icon,
+          label: label,
+          selected: _mediaKind == kind,
+          onTap: () => _selectMediaKind(kind),
+        );
+    return _composerSegmentSwitcher(
+      key: const ValueKey('mediaKindSegments'),
+      segments: [
+        segment(
+          _MediaKind.emoji,
+          HeroAppIcons.solidFaceSmile,
+          AppStrings.t(AppStringKeys.composerEmoji),
+        ),
+        segment(
+          _MediaKind.sticker,
+          HeroAppIcons.grip,
+          AppStrings.t(AppStringKeys.composerStickers),
+        ),
+        segment(
+          _MediaKind.gif,
+          HeroAppIcons.gif,
+          AppStrings.t(AppStringKeys.downloadsMediaAnimation),
+        ),
+      ],
+    );
+  }
+
+  /// The segmented switcher docked panels share (Emoji | Stickers | GIF, and
+  /// Voice | Video message), so every panel draws the same control.
+  Widget _composerSegmentSwitcher({
+    required Key key,
+    required List<_ComposerSegment> segments,
+  }) {
     final c = context.colors;
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    Widget segment(_MediaKind kind, AppIconData icon, String label) {
-      final selected = _mediaKind == kind;
-      final content = AnimatedContainer(
-        duration: reduceMotion
-            ? Duration.zero
-            : const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-        height: 30,
-        decoration: BoxDecoration(
-          color: selected ? c.card : Colors.transparent,
-          borderRadius: BorderRadius.circular(AppRadius.control),
-          boxShadow: selected
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.08),
-                    blurRadius: 3,
-                    offset: const Offset(0, 1),
-                  ),
-                ]
-              : null,
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AppIcon(
-              icon,
-              size: 16,
-              color: selected ? AppTheme.brand : c.textSecondary,
+    // A brand tint over the track, as on the format panel's selected cell. The
+    // light track is as white as a card, so a card-coloured fill would vanish.
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final highlight = Color.alphaBlend(
+      AppTheme.brand.withValues(alpha: dark ? 0.28 : 0.14),
+      c.searchFill,
+    );
+    Widget buildSegment(_ComposerSegment item) {
+      final selected = item.selected;
+      final enabled = item.onTap != null;
+      final content = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AppIcon(
+            item.icon,
+            size: 16,
+            color: !enabled
+                ? c.textTertiary
+                : selected
+                ? AppTheme.brand
+                : c.textSecondary,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            item.label,
+            maxLines: 1,
+            overflow: TextOverflow.fade,
+            softWrap: false,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: !enabled
+                  ? c.textTertiary
+                  : selected
+                  ? c.textPrimary
+                  : c.textSecondary,
             ),
-            const SizedBox(width: 5),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.fade,
-              softWrap: false,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: selected ? c.textPrimary : c.textSecondary,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       );
       return Expanded(
         child: Semantics(
           button: true,
           selected: selected,
-          label: label,
+          enabled: enabled ? null : false,
+          label: item.label,
           child: GestureDetector(
-            key: ValueKey('mediaSegment-${kind.name}'),
+            key: item.key,
             behavior: HitTestBehavior.opaque,
-            onTap: () => _selectMediaKind(kind),
-            // Large text scales shrink the pill content instead of clipping.
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: content,
+            onTap: item.onTap,
+            // The highlight always fills the whole segment. Unselected
+            // segments have no colour at all, so a change fades the tint
+            // itself instead of passing through grey on the way to
+            // transparent black.
+            child: AnimatedContainer(
+              duration: reduceMotion
+                  ? Duration.zero
+                  : const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              height: 30,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected ? highlight : null,
+                // Concentric with the 9pt track inside its 2pt padding.
+                borderRadius: BorderRadius.circular(7),
+              ),
+              // Large text scales shrink the content, never the highlight.
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: content,
+                ),
               ),
             ),
           ),
@@ -8353,32 +9312,14 @@ class _ChatInputBarState extends State<ChatInputBar>
     }
 
     return Container(
-      key: const ValueKey('mediaKindSegments'),
+      key: key,
       margin: const EdgeInsets.fromLTRB(10, 8, 10, 0),
       padding: const EdgeInsets.all(2),
       decoration: BoxDecoration(
         color: c.searchFill,
         borderRadius: BorderRadius.circular(9),
       ),
-      child: Row(
-        children: [
-          segment(
-            _MediaKind.emoji,
-            HeroAppIcons.solidFaceSmile,
-            AppStrings.t(AppStringKeys.composerEmoji),
-          ),
-          segment(
-            _MediaKind.sticker,
-            HeroAppIcons.grip,
-            AppStrings.t(AppStringKeys.composerStickers),
-          ),
-          segment(
-            _MediaKind.gif,
-            HeroAppIcons.gif,
-            AppStrings.t(AppStringKeys.downloadsMediaAnimation),
-          ),
-        ],
-      ),
+      child: Row(children: [for (final item in segments) buildSegment(item)]),
     );
   }
 
@@ -8901,209 +9842,430 @@ class _ChatInputBarState extends State<ChatInputBar>
     ),
   );
 
+  /// Fixed slots inside the 318pt panel, so nothing moves between states:
+  /// switcher 8–42, status line 82–126, record button 142–226 (centre 184,
+  /// halo 128–240), helper line centred on 260.
   Widget _mobileVoicePanel() {
-    final c = context.colors;
-    final granted = _recorder != null;
-    final label = _startingRecording
-        ? AppStrings.t(AppStringKeys.composerRecordingPreparing)
-        : _stoppingRecording
-        ? AppStrings.t(AppStringKeys.composerRecordingFinishing)
-        : !granted
-        ? AppStrings.t(AppStringKeys.composerMicrophonePermissionRequired)
-        : !_recording
-        ? AppStrings.t(AppStringKeys.composerHoldToTalk)
-        : _recordingLocked
-        ? (_recordingPaused
-              ? AppStrings.t(AppStringKeys.composerRecordingPaused)
-              : AppStrings.t(AppStringKeys.composerRecordingLocked))
-        : (_recordCancelled
-              ? AppStrings.t(AppStringKeys.composerReleaseFingerToCancel)
-              : AppStrings.t(AppStringKeys.composerRecordingReleasePreview));
+    final recordingBusy =
+        _recording || _startingRecording || _stoppingRecording;
     return Container(
       key: const ValueKey('composerMobileVoicePanel'),
       height: 318,
       width: double.infinity,
       color: _composerDockedSurfaceColor,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Stack(
         children: [
-          Container(
-            height: 42,
-            margin: const EdgeInsets.symmetric(horizontal: 20),
-            padding: const EdgeInsets.all(3),
-            decoration: BoxDecoration(
-              color: c.searchFill,
-              borderRadius: BorderRadius.circular(AppRadius.card),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _voiceModeButton(
-                    key: const ValueKey('voicePanelVoiceMessage'),
-                    selected: true,
-                    icon: HeroAppIcons.microphone,
-                    label: AppStrings.t(
-                      AppStringKeys.voiceNotePreviewVoiceMessage,
-                    ),
-                    onTap: () {},
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _composerSegmentSwitcher(
+              key: const ValueKey('voicePanelSegments'),
+              segments: [
+                (
+                  key: const ValueKey('voicePanelVoiceMessage'),
+                  icon: HeroAppIcons.microphone,
+                  label: AppStrings.t(
+                    AppStringKeys.voiceNotePreviewVoiceMessage,
                   ),
+                  selected: true,
+                  onTap: () {},
                 ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: _voiceModeButton(
-                    key: const ValueKey('voicePanelVideoMessage'),
-                    selected: false,
-                    icon: HeroAppIcons.solidFileVideo,
-                    label: AppStrings.t(
-                      AppStringKeys.videoNotePreviewVideoMessage,
-                    ),
-                    onTap:
-                        _recording || _startingRecording || _stoppingRecording
-                        ? null
-                        : () {
-                            _setPanel(_Panel.none);
-                            unawaited(_recordVideoNote());
-                          },
+                (
+                  key: const ValueKey('voicePanelVideoMessage'),
+                  icon: HeroAppIcons.solidFileVideo,
+                  label: AppStrings.t(
+                    AppStringKeys.videoNotePreviewVideoMessage,
                   ),
+                  selected: false,
+                  onTap: recordingBusy
+                      ? null
+                      : () {
+                          _setPanel(_Panel.none);
+                          unawaited(_recordVideoNote());
+                        },
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 16),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              color: _recordCancelled ? AppTheme.tagRed : c.textSecondary,
+          Positioned(
+            top: 82,
+            height: 44,
+            left: 24,
+            right: 24,
+            child: _mobileVoiceStatusLine(),
+          ),
+          Positioned(
+            // The 112pt halo's box, centred on the record button.
+            top: 128,
+            height: 112,
+            left: 0,
+            right: 0,
+            child: _mobileVoiceRecordControls(),
+          ),
+          Positioned(
+            // The 242–278 helper slot, grown by 4pt each way so the Settings
+            // button keeps a 44pt hit area; its text stays centred on 260.
+            top: 238,
+            height: 44,
+            left: 24,
+            right: 24,
+            child: _mobileVoiceHelperLine(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The error the mobile panel shows, if any. A live recording always keeps
+  /// its timer and waveform.
+  _VoiceInlineError get _visibleVoiceInlineError =>
+      _recording ? _VoiceInlineError.none : _voiceInlineError;
+
+  Widget _mobileVoiceStatusLine() {
+    final c = context.colors;
+    Widget message(String key) => Text(
+      AppStrings.t(key),
+      textAlign: TextAlign.center,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: 15,
+        fontWeight: FontWeight.w500,
+        color: c.textSecondary,
+      ),
+    );
+    // The icon leads the first line inside the text, so a message that wraps
+    // stays one centred block. Red stays on the icon: tagRed text on the
+    // light panel is below 4.5:1 at 14pt.
+    Widget error(AppIconData icon, String key) => Text.rich(
+      TextSpan(
+        children: [
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: Padding(
+              padding: const EdgeInsetsDirectional.only(end: 6),
+              child: AppIcon(icon, size: 18, color: AppTheme.tagRed),
             ),
           ),
-          const SizedBox(height: 10),
-          if (_recording) ...[
-            SizedBox(
-              width: 220,
-              height: 28,
-              child: ValueListenableBuilder<_RecTick>(
-                valueListenable: _recTick,
-                builder: (context, tick, _) => Row(
-                  children: [
-                    for (final level in tick.levels)
-                      Expanded(
-                        child: Align(
-                          child: Container(
-                            width: 2,
-                            height:
-                                (4 + ((level.clamp(-60.0, 0.0) + 60) / 60) * 24)
-                                    .toDouble(),
-                            decoration: BoxDecoration(
-                              color: _recordingPaused
-                                  ? c.textTertiary
-                                  : AppTheme.brand,
-                              borderRadius: BorderRadius.circular(1),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+          TextSpan(text: AppStrings.t(key)),
+        ],
+      ),
+      textAlign: TextAlign.center,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: 14,
+        height: 18 / 14,
+        fontWeight: FontWeight.w500,
+        color: c.textPrimary,
+      ),
+    );
+    final content = _recording
+        // The record button reports the elapsed time; a live region reading
+        // every tick of the timer would talk over everything else.
+        ? ExcludeSemantics(child: _mobileVoiceRecordingRow())
+        : _composerAttachmentWaiting
+        ? message(AppStringKeys.composerAttachmentWaiting)
+        : switch (_visibleVoiceInlineError) {
+            _VoiceInlineError.failed => error(
+              HeroAppIcons.triangleExclamation,
+              AppStringKeys.composerRecordingFailed,
             ),
-            const SizedBox(height: 6),
+            _VoiceInlineError.microphoneRequired => error(
+              HeroAppIcons.microphoneSlash,
+              AppStringKeys.composerMicrophonePermissionRequired,
+            ),
+            _VoiceInlineError.microphoneSettings => error(
+              HeroAppIcons.microphoneSlash,
+              AppStringKeys.composerMicrophonePermissionSettings,
+            ),
+            _VoiceInlineError.none => message(
+              _stoppingRecording
+                  ? AppStringKeys.composerRecordingFinishing
+                  : _startingRecording
+                  ? AppStringKeys.composerRecordingPreparing
+                  : AppStringKeys.composerHoldToTalk,
+            ),
+          };
+    // A live region, so VoiceOver reads an error as soon as it appears.
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      child: Center(child: content),
+    );
+  }
+
+  /// The live recording's status row: the timer on the panel's centre line,
+  /// the red dot to its left balanced by a blank on its right, and the newest
+  /// meter levels mirrored on both sides, newest next to the timer.
+  Widget _mobileVoiceRecordingRow() {
+    final c = context.colors;
+    final paused = _recordingPaused;
+    final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    Widget meter(List<double> levels, {required bool mirrored}) {
+      final empty = _mobileMeterBars - levels.length;
+      final bars = <Widget>[
+        for (var index = 0; index < _mobileMeterBars; index++)
+          if (index < empty)
+            _mobileMeterBar(4, c.textTertiary)
+          else
+            _mobileMeterBar(
+              4 + (levels[index - empty].clamp(-60.0, 0.0) + 60) / 60 * 24,
+              paused ? c.textTertiary : AppTheme.brand,
+            ),
+      ];
+      final ordered = mirrored ? bars.reversed.toList() : bars;
+      return SizedBox(
+        width: 62,
+        height: 28,
+        child: Row(
+          children: [
+            for (var index = 0; index < ordered.length; index++) ...[
+              if (index > 0) const SizedBox(width: 2),
+              ordered[index],
+            ],
           ],
-          Opacity(
-            opacity: _recording ? 1 : 0.3,
-            child: ValueListenableBuilder<_RecTick>(
-              valueListenable: _recTick,
-              builder: (context, tick, _) => Text(
-                formatMediaDuration(tick.elapsed.floor()),
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                  color: c.textPrimary,
+        ),
+      );
+    }
+
+    return ValueListenableBuilder<_RecTick>(
+      valueListenable: _recTick,
+      builder: (context, tick, _) {
+        final levels = tick.levels.length > _mobileMeterBars
+            ? tick.levels.sublist(tick.levels.length - _mobileMeterBars)
+            : tick.levels;
+        return Directionality(
+          // Mirrored around the record button's centre in every locale.
+          textDirection: TextDirection.ltr,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              meter(levels, mirrored: false),
+              const SizedBox(width: 12),
+              _RecordingDot(
+                color: paused ? c.textTertiary : AppTheme.tagRed,
+                blinking: !paused && !reduceMotion,
+              ),
+              const SizedBox(width: 6),
+              SizedBox(
+                width: 56,
+                child: Text(
+                  formatMediaDuration(tick.elapsed.floor()),
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.visible,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    color: paused ? c.textSecondary : c.textPrimary,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
               ),
-            ),
+              // Balances the dot so the timer, not the dot and timer, sits
+              // on the centre line.
+              const SizedBox(width: 6 + 8),
+              const SizedBox(width: 12),
+              meter(levels, mirrored: true),
+            ],
           ),
-          const SizedBox(height: 16),
-          Listener(
-            key: const ValueKey('mobileVoiceRecordButton'),
-            onPointerDown: (e) {
-              if (_recording || _voiceStop != null || _mobilePointerHeld) {
-                return;
-              }
-              _voicePointerId = e.pointer;
-              _mobilePointerHeld = true;
-              _pressStartX = e.position.dx;
-              _pressStartY = e.position.dy;
-              unawaited(_beginVoiceRecording());
-            },
-            onPointerMove: (e) {
-              if (_voicePointerId != e.pointer || _recordingLocked) return;
-              final cancel = e.position.dx - _pressStartX < -70;
-              final lock = _recording && e.position.dy - _pressStartY < -70;
-              if (lock) {
-                setState(() {
-                  _recordingLocked = true;
-                  _recordCancelled = false;
-                });
-                return;
-              }
-              if (cancel != _recordCancelled) {
-                setState(() => _recordCancelled = cancel);
-              }
-            },
-            onPointerUp: (e) {
-              if (_voicePointerId != e.pointer) return;
-              _voicePointerId = null;
-              _mobilePointerHeld = false;
-              if (!_recordingLocked) unawaited(_stopRec());
-            },
-            onPointerCancel: (e) {
-              if (_voicePointerId == e.pointer) _cancelVoiceRecording();
-            },
-            child: AnimatedScale(
-              scale: _recording ? 1.12 : 1,
-              duration: const Duration(milliseconds: 150),
+        );
+      },
+    );
+  }
+
+  static const _mobileMeterBars = 16;
+
+  Widget _mobileMeterBar(double height, Color color) => SizedBox(
+    width: 2,
+    height: 28,
+    child: Center(
+      child: Container(
+        width: 2,
+        height: height,
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(1),
+        ),
+      ),
+    ),
+  );
+
+  Widget _mobileVoiceRecordControls() {
+    final c = context.colors;
+    final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final motion = reduceMotion
+        ? Duration.zero
+        : const Duration(milliseconds: 150);
+    final locked = _recording && _recordingLocked;
+    final held = _recording && !_recordingLocked;
+    final cancelZone = held && _recordCancelled;
+    // A draft or pasted pictures already wait: send or remove them first.
+    final blocked = !_recording && _composerAttachmentWaiting;
+    final busy =
+        !_recording &&
+        _visibleVoiceInlineError == _VoiceInlineError.none &&
+        (_startingRecording || _stoppingRecording);
+    final accent = cancelZone ? AppTheme.tagRed : AppTheme.brand;
+    final Widget glyph = busy
+        ? AppActivityIndicator(size: 24, color: c.onAccent)
+        : cancelZone
+        ? AppIcon(HeroAppIcons.trash, size: 30, color: c.onAccent)
+        : locked
+        ? AppIcon(HeroAppIcons.solidStop, size: 26, color: c.onAccent)
+        : AppIcon(HeroAppIcons.microphone, size: 32, color: c.onAccent);
+    final button = Listener(
+      key: const ValueKey('mobileVoiceRecordButton'),
+      onPointerDown: (e) {
+        if (_recording && _recordingLocked) {
+          // Tapping the locked button stops and leaves the recording as a
+          // draft; it never starts another recording.
+          if (_voiceStop == null && _lockedStopPointerId == null) {
+            _lockedStopPointerId = e.pointer;
+            _lockedStopDownPosition = e.position;
+          }
+          return;
+        }
+        if (_recording || _voiceStop != null || _mobilePointerHeld) {
+          return;
+        }
+        _clearVoiceInlineError();
+        _voicePointerId = e.pointer;
+        _mobilePointerHeld = true;
+        _pressStartX = e.position.dx;
+        _pressStartY = e.position.dy;
+        unawaited(_beginVoiceRecording());
+      },
+      onPointerMove: (e) {
+        if (_lockedStopPointerId == e.pointer) {
+          // A drag is not a tap.
+          if ((e.position - _lockedStopDownPosition).distance > kTouchSlop) {
+            _lockedStopPointerId = null;
+          }
+          return;
+        }
+        if (_voicePointerId != e.pointer || _recordingLocked) return;
+        final cancel = e.position.dx - _pressStartX < -70;
+        final lock = _recording && e.position.dy - _pressStartY < -70;
+        if (lock) {
+          setState(() {
+            _recordingLocked = true;
+            _recordCancelled = false;
+          });
+          return;
+        }
+        if (cancel != _recordCancelled) {
+          setState(() => _recordCancelled = cancel);
+        }
+      },
+      onPointerUp: (e) {
+        if (_lockedStopPointerId == e.pointer) {
+          _lockedStopPointerId = null;
+          if (_recording && _recordingLocked) unawaited(_stopRec());
+          return;
+        }
+        if (_voicePointerId != e.pointer) return;
+        _voicePointerId = null;
+        _mobilePointerHeld = false;
+        if (!_recordingLocked) unawaited(_stopRec());
+      },
+      onPointerCancel: (e) {
+        if (_lockedStopPointerId == e.pointer) {
+          _lockedStopPointerId = null;
+          return;
+        }
+        if (_voicePointerId == e.pointer) _cancelVoiceRecording();
+      },
+      child: AnimatedScale(
+        scale: held ? 1.12 : 1,
+        duration: motion,
+        child: Container(
+          width: 84,
+          height: 84,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+          child: glyph,
+        ),
+      ),
+    );
+    return SizedBox(
+      width: double.infinity,
+      height: 112,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: held && !blocked ? 1 : 0,
+              duration: motion,
               child: Container(
-                width: 84,
-                height: 84,
-                alignment: Alignment.center,
+                width: 112,
+                height: 112,
                 decoration: BoxDecoration(
-                  color: _recordCancelled ? AppTheme.tagRed : AppTheme.brand,
+                  color: accent.withValues(alpha: dark ? 0.24 : 0.16),
                   shape: BoxShape.circle,
                 ),
-                child: const AppIcon(
-                  HeroAppIcons.microphone,
-                  size: 32,
-                  color: Colors.white,
-                ),
               ),
             ),
           ),
-          if (_recordingLocked) ...[
-            const SizedBox(height: 14),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _voiceRecordingAction(
-                  icon: HeroAppIcons.trash,
-                  color: AppTheme.tagRed,
-                  onTap: _cancelLockedRecording,
+          ValueListenableBuilder<_RecTick>(
+            valueListenable: _recTick,
+            child: IgnorePointer(
+              ignoring: blocked,
+              child: AnimatedOpacity(
+                opacity: blocked ? 0.4 : 1,
+                duration: motion,
+                child: button,
+              ),
+            ),
+            builder: (context, tick, child) => Semantics(
+              button: true,
+              enabled: blocked ? false : null,
+              label: AppStrings.t(
+                locked
+                    ? AppStringKeys.composerRecordingStop
+                    : AppStringKeys.composerHoldToTalk,
+              ),
+              value: _recording
+                  ? formatMediaDuration(tick.elapsed.floor())
+                  : null,
+              onTap: locked ? () => unawaited(_stopRec()) : null,
+              excludeSemantics: true,
+              child: child,
+            ),
+          ),
+          // Side buttons sit 28pt off the button's edge (centres ±92pt), in
+          // the same stack, so they never shift the record button.
+          if (locked) ...[
+            Transform.translate(
+              offset: const Offset(-92, 0),
+              child: _mobileVoiceSideButton(
+                key: const ValueKey('mobileVoiceDiscard'),
+                icon: HeroAppIcons.trash,
+                color: AppTheme.tagRed,
+                label: AppStrings.t(AppStringKeys.composerRecordingDiscard),
+                onTap: _cancelLockedRecording,
+              ),
+            ),
+            Transform.translate(
+              offset: const Offset(92, 0),
+              child: _mobileVoiceSideButton(
+                key: const ValueKey('mobileVoicePauseResume'),
+                icon: _recordingPaused
+                    ? HeroAppIcons.solidPlay
+                    : HeroAppIcons.solidPause,
+                color: AppTheme.brand,
+                label: AppStrings.t(
+                  _recordingPaused
+                      ? AppStringKeys.composerRecordingResume
+                      : AppStringKeys.musicPlayerPause,
                 ),
-                const SizedBox(width: 22),
-                _voiceRecordingAction(
-                  icon: _recordingPaused
-                      ? HeroAppIcons.play
-                      : HeroAppIcons.pause,
-                  color: AppTheme.brand,
-                  onTap: () => unawaited(_toggleRecPause()),
-                ),
-                const SizedBox(width: 22),
-                _voiceRecordingAction(
-                  icon: HeroAppIcons.square,
-                  color: AppTheme.brand,
-                  onTap: () => unawaited(_stopRec()),
-                ),
-              ],
+                onTap: () => unawaited(_toggleRecPause()),
+              ),
             ),
           ],
         ],
@@ -9111,72 +10273,20 @@ class _ChatInputBarState extends State<ChatInputBar>
     );
   }
 
-  Widget _voiceModeButton({
+  Widget _mobileVoiceSideButton({
     required Key key,
-    required bool selected,
-    required AppIconData icon,
-    required String label,
-    required VoidCallback? onTap,
-  }) {
-    final c = context.colors;
-    return GestureDetector(
-      key: key,
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 140),
-        curve: Curves.easeOutCubic,
-        height: 36,
-        decoration: BoxDecoration(
-          color: selected ? c.card : Colors.transparent,
-          borderRadius: BorderRadius.circular(AppRadius.control),
-          boxShadow: selected
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.10),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                  ),
-                ]
-              : null,
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AppIcon(
-              icon,
-              size: 17,
-              color: selected ? AppTheme.brand : c.textSecondary,
-            ),
-            const SizedBox(width: 7),
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  color: selected ? c.textPrimary : c.textSecondary,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _voiceRecordingAction({
     required AppIconData icon,
     required Color color,
+    required String label,
     required VoidCallback onTap,
-  }) => GestureDetector(
-    behavior: HitTestBehavior.opaque,
+  }) => AppInteractiveSurface(
+    key: key,
+    semanticLabel: label,
     onTap: onTap,
+    borderRadius: BorderRadius.circular(22),
     child: Container(
-      width: 42,
-      height: 42,
+      width: 44,
+      height: 44,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
@@ -9185,6 +10295,64 @@ class _ChatInputBarState extends State<ChatInputBar>
       child: AppIcon(icon, size: 20, color: color),
     ),
   );
+
+  Widget _mobileVoiceHelperLine() {
+    final c = context.colors;
+    if (_visibleVoiceInlineError == _VoiceInlineError.microphoneSettings) {
+      // Settings opens only on this press, never on its own.
+      return Center(
+        child: AppInteractiveSurface(
+          key: const ValueKey('mobileVoiceOpenSettings'),
+          semanticLabel: AppStrings.t(AppStringKeys.storyOpenSettings),
+          onTap: () => unawaited(openAppSettings()),
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Center(
+                widthFactor: 1,
+                child: Text(
+                  AppStrings.t(AppStringKeys.storyOpenSettings),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.brand,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    if (!_recording || _composerAttachmentWaiting) {
+      return const SizedBox.shrink();
+    }
+    final cancelZone = !_recordingLocked && _recordCancelled;
+    final key = _recordingLocked
+        ? (_recordingPaused
+              ? AppStringKeys.composerRecordingPaused
+              : AppStringKeys.composerRecordingLocked)
+        : cancelZone
+        ? AppStringKeys.composerReleaseFingerToCancel
+        : AppStringKeys.composerRecordingReleasePreview;
+    return Center(
+      child: Text(
+        AppStrings.t(key),
+        textAlign: TextAlign.center,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: cancelZone ? FontWeight.w600 : FontWeight.w400,
+          color: cancelZone ? c.textPrimary : c.textSecondary,
+        ),
+      ),
+    );
+  }
 
   Widget _stickerContent() {
     final store = StickerStore.shared;
@@ -9417,6 +10585,81 @@ class _ChatInputBarState extends State<ChatInputBar>
     StickerStore.shared.loadIfNeeded();
     EmojiStore.shared.loadIfNeeded();
   }
+}
+
+/// The voice panel's live-recording dot: blinks 1 → 0.3 → 1 each second
+/// while [blinking], and holds still otherwise (paused, or reduced motion).
+class _RecordingDot extends StatefulWidget {
+  const _RecordingDot({required this.color, required this.blinking});
+
+  final Color color;
+  final bool blinking;
+
+  @override
+  State<_RecordingDot> createState() => _RecordingDotState();
+}
+
+class _RecordingDotState extends State<_RecordingDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 1),
+  );
+  late final Animation<double> _opacity = TweenSequence<double>([
+    TweenSequenceItem(
+      tween: Tween(
+        begin: 1.0,
+        end: 0.3,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
+      weight: 1,
+    ),
+    TweenSequenceItem(
+      tween: Tween(
+        begin: 0.3,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
+      weight: 1,
+    ),
+  ]).animate(_controller);
+
+  @override
+  void initState() {
+    super.initState();
+    _syncBlinking();
+  }
+
+  @override
+  void didUpdateWidget(_RecordingDot oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.blinking != widget.blinking) _syncBlinking();
+  }
+
+  void _syncBlinking() {
+    if (widget.blinking) {
+      _controller.repeat();
+    } else {
+      _controller
+        ..stop()
+        ..value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: _opacity,
+    child: SizedBox.square(
+      dimension: 8,
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: widget.color, shape: BoxShape.circle),
+      ),
+    ),
+  );
 }
 
 class _AiReplyThinkingIndicator extends StatefulWidget {

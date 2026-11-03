@@ -55,8 +55,10 @@ import 'chat/group_remark_controller.dart';
 import 'chat/link_preview_fixer.dart';
 import 'chat/music_player_controller.dart';
 import 'chats/chat_folder_tag_controller.dart';
+import 'chats/local_pin_store.dart';
 import 'components/drawer_controller.dart' as dc;
 import 'config/build_flags.dart';
+import 'firebase_options.dart';
 import 'history/message_history_store.dart';
 import 'l10n/app_locale_controller.dart';
 import 'l10n/app_localizations.dart';
@@ -268,6 +270,10 @@ Future<void> _bootstrapAndRunApp() async {
     unawaited(MessageHistoryStore.shared.ensureLoaded());
     MessageHistoryStore.shared.startObserving();
   }
+  // Device-only pins beyond the server cap live in this build's own
+  // preferences; the store is inert (and reads nothing) until its switch is
+  // turned on.
+  LocalPinStore.shared.initialize(prefs);
   // Preload Telegram blocked-user list so chat filters have data right away.
   unawaited(BlockedUserService.shared.loadBlockedUsers());
   // Firebase + analytics + Sentry tags are several platform-channel round
@@ -334,7 +340,9 @@ Future<void> _initTelemetry() async {
       AppVersion.load(),
     ).wait;
     if (hasFirebaseConfiguration) {
-      await Firebase.initializeApp();
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
       await FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(true);
       await FirebaseAnalytics.instance.setDefaultEventParameters(
         appVersion.analyticsParameters,

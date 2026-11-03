@@ -48,13 +48,28 @@ abstract final class AppTextSize {
       ? footnote
       : callout;
 
-  /// Only touch previews retain their standard size at the Small preset.
-  /// Names, timestamps, message bodies, avatars and row geometry still use
-  /// the saved app scale unchanged.
+  /// Legacy/shared previews retain their standard size at Small on touch.
+  /// Actual chat rows opt into the separate sender/message roles below.
   static double chatListPreviewContentScale(
     double appScale, [
     TargetPlatform? platform,
   ]) => _isMobileChatPlatform(platform) ? math.max(appScale, 1.0) : appScale;
+
+  /// Pre-OS sizes for actual chat-row spans. Apply the captured OS scaler
+  /// once after resolving the saved content scale, including custom values.
+  static double chatRowPreviewMessageSize(
+    double appScale, [
+    TargetPlatform? platform,
+  ]) => _isMobileChatPlatform(platform)
+      ? math.max(12.5, footnote * appScale)
+      : chatListPreview(platform) * appScale;
+
+  static double chatRowPreviewSenderSize(
+    double appScale, [
+    TargetPlatform? platform,
+  ]) =>
+      chatListPreview(platform) *
+      chatListPreviewContentScale(appScale, platform);
 
   static double chatListTimestamp([TargetPlatform? platform]) =>
       isDesktopTargetPlatform(platform) ? caption : footnote;
@@ -119,6 +134,15 @@ extension AppTextWeightContext on BuildContext {
 }
 
 abstract final class AppTextStyle {
+  /// Mirrors Flutter Text's OS Bold Text override when measuring a label.
+  /// This is an accessibility measurement, not an app-authored weight: the
+  /// inherited style is unchanged when Bold Text is off, and when on the
+  /// painter must match Flutter's bold override rather than our design ladder.
+  static TextStyle forSystemBoldTextMeasurement(
+    TextStyle style, {
+    required bool boldText,
+  }) => boldText ? style.copyWith(fontWeight: FontWeight.bold) : style;
+
   /// Message-body-sized text runs only, never an entire bubble subtree.
   /// Overrides inherited leading (which otherwise produces about 24pt pitch
   /// at 17pt) without changing font selection, weight, tracking or OS scaling.
@@ -266,6 +290,10 @@ abstract final class AppIconSize {
   static const double toolbar = 24;
   static const double add = 25;
   static const double chevron = 17;
+
+  /// Simple-mode composer glyphs: the row's cells, and the More panel's items.
+  static const double simpleComposer = 26;
+  static const double simpleComposerPanel = 28;
 }
 
 abstract final class AppMetric {
@@ -328,7 +356,26 @@ abstract final class AppMetric {
   );
 
   static double chatListAvatarSize([TargetPlatform? platform]) =>
-      isDesktopTargetPlatform(platform) ? 44 : avatarSize;
+      isDesktopTargetPlatform(platform)
+      ? 44
+      : _isMobileChatPlatform(platform)
+      ? 49
+      : avatarSize;
+
+  static double chatRowHorizontalInset([TargetPlatform? platform]) =>
+      _isMobileChatPlatform(platform) ? 16 : AppSpacing.xl;
+  static double chatRowPreviewGap([TargetPlatform? platform]) =>
+      _isMobileChatPlatform(platform) ? 2 : AppSpacing.xs;
+  static double chatHeaderAvatarSize([TargetPlatform? platform]) =>
+      _isMobileChatPlatform(platform) ? 38 : headerAvatarSize;
+  static double chatHeaderHitTarget([TargetPlatform? platform]) =>
+      _isMobileChatPlatform(platform) ? 44 : hitTarget;
+  static double chatHeaderAddSize([TargetPlatform? platform]) =>
+      _isMobileChatPlatform(platform) ? 29 : AppIconSize.add;
+  static double chatSearchHeight([TargetPlatform? platform]) =>
+      _isMobileChatPlatform(platform) ? 33 : searchHeight;
+  static double chatSearchIcon([TargetPlatform? platform]) =>
+      _isMobileChatPlatform(platform) ? 18 : searchIcon;
   static const double headerAvatarSize = 36;
   static const double hitTarget = 36;
   static const double searchHeight = 36;
@@ -374,6 +421,25 @@ abstract final class AppMetric {
   static const double composerPublishButtonHeight = 38;
   static const double composerFormatButtonWidth = 32;
   static const double composerFormatButtonHeight = 28;
+
+  // Simple-mode phone composer (简洁模式): one row of square cells around the
+  // field, and the More panel that gathers the rest of the tools.
+  static const double simpleComposerCell = 44;
+  static const double simpleComposerBarInset = 7;
+
+  /// Below this typing-field width the row drops its Mic cell while there is
+  /// something to send, so the field keeps room for a few words.
+  static const double simpleComposerNarrowField = 150;
+  static const double simpleComposerPanelHeight = 248;
+
+  /// Large text grows the More panel up to this share of the screen height.
+  static const double simpleComposerPanelMaxScreenFraction = 0.45;
+
+  /// Narrowest More-panel column at 100% text; it scales with the label.
+  static const double simpleComposerPanelCellMinWidth = 84;
+  static const int simpleComposerPanelMaxColumns = 8;
+  static const double simpleComposerPanelListRowHeight = 52;
+  static const double simpleComposerPanelLabelLineHeight = 16;
   static const double mediaTile = 92;
   static const double overlayCloseButton = 22;
 }

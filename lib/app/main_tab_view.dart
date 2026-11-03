@@ -12,6 +12,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -61,25 +63,49 @@ import 'desktop_navigation_rail.dart';
 import 'desktop_utility_window.dart';
 import 'detail_content_reveal.dart';
 import 'horizontal_safe_viewport.dart';
-import 'liquid_glass_bottom_bar.dart'
-    show GlassSelectionIndicator, LiquidGlassBottomBar;
+import 'liquid_glass_bottom_bar.dart' show LiquidGlassBottomBar;
 import 'native_glass_surface.dart';
+import 'native_tab_bar.dart';
 import 'primary_chat_launcher.dart';
+import 'top_corner_cluster.dart';
 import 'unread_badge_model.dart';
 
 @visibleForTesting
 bool desktopChatKindUsesContextPane(ChatKind? kind) =>
     kind == ChatKind.group || kind == ChatKind.channel;
 
+/// Per-tab navigator keys for one shell instance.
+///
+/// Owned by each [_MainRootViewState]: simultaneous shells (the split root
+/// plus a desktop chat window, or an account-keyed replacement shell) each
+/// keep their own keys, so a replacement shell can never retain the old
+/// Navigator subtree and two live shells can never collide over key
+/// ownership. Tests reach a shell's own keys through the instance-scoped
+/// [MainTabView.keysHost] / [MainSplitRootView.keysHost] hook.
+@visibleForTesting
+List<GlobalKey<NavigatorState>> createTabNavigatorKeys() =>
+    List.generate(4, (_) => GlobalKey<NavigatorState>());
+
+/// Receives the per-shell navigator keys a shell state owns; an
+/// instance-scoped testing hook, invoked exactly once per mounted shell.
+typedef TabNavigatorKeysHost =
+    void Function(List<GlobalKey<NavigatorState>> keys);
+
 class MainTabView extends StatefulWidget {
-  const MainTabView({super.key});
+  const MainTabView({super.key, this.keysHost});
+
+  @visibleForTesting
+  final TabNavigatorKeysHost? keysHost;
 
   @override
   State<MainTabView> createState() => _MainTabViewState();
 }
 
 class MainSplitRootView extends StatefulWidget {
-  const MainSplitRootView({super.key});
+  const MainSplitRootView({super.key, this.keysHost});
+
+  @visibleForTesting
+  final TabNavigatorKeysHost? keysHost;
 
   @override
   State<MainSplitRootView> createState() => _MainSplitRootViewState();
@@ -133,6 +159,12 @@ abstract class _MainRootViewState<T extends StatefulWidget> extends State<T> {
   @override
   void initState() {
     super.initState();
+    switch (widget) {
+      case final MainTabView tab:
+        tab.keysHost?.call(_navKeys);
+      case final MainSplitRootView split:
+        split.keysHost?.call(_navKeys);
+    }
     if (_androidShareIntent.supported) {
       _androidShareIntent.addListener(_handleAndroidShareIntentChanged);
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -359,10 +391,12 @@ abstract class _MainRootViewState<T extends StatefulWidget> extends State<T> {
   void _toggleContextPane() =>
       setState(() => _contextPaneShown = !_contextPaneShown);
 
-  late final List<GlobalKey<NavigatorState>> _navKeys = List.generate(
-    4,
-    (_) => GlobalKey<NavigatorState>(),
-  );
+  final List<GlobalKey<NavigatorState>> _navKeys = createTabNavigatorKeys();
+
+  /// The navigator keys owned by this shell, for tests that need to push or
+  /// inspect a tab's nested route stack.
+  @visibleForTesting
+  List<GlobalKey<NavigatorState>> get tabNavigatorKeys => _navKeys;
 
   static const _allTabs = [
     _MainTabItem(0, AppStringKeys.tabMessages, HeroAppIcons.solidMessage),
@@ -649,7 +683,9 @@ abstract class _MainRootViewState<T extends StatefulWidget> extends State<T> {
         child: PopScope(
           canPop: false,
           onPopInvokedWithResult: (didPop, _) async {
-            if (!didPop) await _onWillPop();
+            if (!didPop && await _onWillPop()) {
+              await SystemNavigator.pop();
+            }
           },
           child: _rootStack(),
         ),
@@ -1231,70 +1267,76 @@ abstract class _MainRootViewState<T extends StatefulWidget> extends State<T> {
                           SizedBox(
                             key: const ValueKey('tablet-list-pane'),
                             width: compact ? 0 : sidebarWidth,
-                            child: Offstage(
-                              offstage: compact,
-                              child: OverflowBox(
-                                minWidth: sidebarWidth,
-                                maxWidth: sidebarWidth,
-                                child: _sidebarWithTopicList(
-                                  context,
-                                  BottomBarLayout(
-                                    overlay: theme.liquidGlassBottomBar,
-                                    body: _LazyTabStack(
-                                      selection: selection,
-                                      items: tabs,
-                                      builder: (tab) =>
-                                          _tabletSidebarRoot(tab.index),
-                                    ),
-                                    footer: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (!compact)
-                                          const MusicMiniPlayerDock(),
-                                        AnimatedBuilder(
-                                          animation: _unread,
-                                          builder: (context, _) =>
-                                              _MainBottomBar(
-                                                chatListController:
-                                                    _chatListController,
-                                                selection: selection,
-                                                onSelect: _select,
-                                                items: tabs,
-                                                reserveBottomInset: false,
-                                                onClearUnread:
-                                                    _chatListController
-                                                        .markAllRead,
-                                                unread: _unread.countFor(
-                                                  theme.unreadBadgeMode,
+                            child: TopClusterPane(
+                              enabled: !compact,
+                              child: Offstage(
+                                offstage: compact,
+                                child: OverflowBox(
+                                  minWidth: sidebarWidth,
+                                  maxWidth: sidebarWidth,
+                                  child: _sidebarWithTopicList(
+                                    context,
+                                    BottomBarLayout(
+                                      overlay: theme.liquidGlassBottomBar,
+                                      body: _LazyTabStack(
+                                        selection: selection,
+                                        items: tabs,
+                                        builder: (tab) =>
+                                            _tabletSidebarRoot(tab.index),
+                                      ),
+                                      footer: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (!compact)
+                                            const MusicMiniPlayerDock(),
+                                          AnimatedBuilder(
+                                            animation: _unread,
+                                            builder: (context, _) =>
+                                                _MainBottomBar(
+                                                  chatListController:
+                                                      _chatListController,
+                                                  selection: selection,
+                                                  onSelect: _select,
+                                                  items: tabs,
+                                                  reserveBottomInset: false,
+                                                  onClearUnread:
+                                                      _chatListController
+                                                          .markAllRead,
+                                                  unread: _unread.countFor(
+                                                    theme.unreadBadgeMode,
+                                                  ),
                                                 ),
-                                              ),
-                                        ),
-                                      ],
+                                          ),
+                                        ],
+                                      ),
                                     ),
+                                    overlayVisible: !compact,
                                   ),
-                                  overlayVisible: !compact,
                                 ),
                               ),
                             ),
                           ),
                           Expanded(
-                            child: _musicAwareContent(
-                              TopicListPlacementScope(
-                                placement: compact || activeTabIndex != 0
-                                    ? TopicListPlacement.inline
-                                    : TopicListPlacement.sidebar,
-                                child: _animatedTabletDetailPane(
-                                  activeTabIndex,
-                                  showMessageBackButton: compact,
-                                  onMessageInfoPressed: canToggleInfoPane
-                                      ? _toggleContextPane
-                                      : null,
-                                  messageTrailingPane: contextPane,
-                                  messageTrailingPaneWidth:
-                                      desktopInfoPaneWidth,
+                            child: TopClusterPane(
+                              enabled: !compact,
+                              child: _musicAwareContent(
+                                TopicListPlacementScope(
+                                  placement: compact || activeTabIndex != 0
+                                      ? TopicListPlacement.inline
+                                      : TopicListPlacement.sidebar,
+                                  child: _animatedTabletDetailPane(
+                                    activeTabIndex,
+                                    showMessageBackButton: compact,
+                                    onMessageInfoPressed: canToggleInfoPane
+                                        ? _toggleContextPane
+                                        : null,
+                                    messageTrailingPane: contextPane,
+                                    messageTrailingPaneWidth:
+                                        desktopInfoPaneWidth,
+                                  ),
                                 ),
+                                reserveForShellPlayer: compact,
                               ),
-                              reserveForShellPlayer: compact,
                             ),
                           ),
                         ],
@@ -2182,6 +2224,23 @@ double homeIndicatorBarClearance(BuildContext context) {
   return math.min(reported, kHomeIndicatorClearance);
 }
 
+/// Focused tests exercise the real production bar without booting chat pages.
+@visibleForTesting
+Widget mainBottomBarForTesting({
+  required int selection,
+  required ValueChanged<int> onSelect,
+  required VoidCallback onClearUnread,
+  int unread = 0,
+  bool reserveBottomInset = true,
+}) => _MainBottomBar(
+  selection: selection,
+  onSelect: onSelect,
+  onClearUnread: onClearUnread,
+  items: _MainRootViewState._allTabs,
+  unread: unread,
+  reserveBottomInset: reserveBottomInset,
+);
+
 /// Shared tab controls with an optional glass surface.
 class _MainBottomBar extends StatelessWidget {
   const _MainBottomBar({
@@ -2335,116 +2394,134 @@ class _MainBottomBar extends StatelessWidget {
         children: [
           for (var i = 0; i < items.length; i++)
             Expanded(
-              child: AppInteractiveSurface(
-                key: ValueKey('bottom-tab-${items[i].index}'),
-                // The icon-only glass slot and selection share a full capsule,
-                // concentric with the outer surface across its 5pt inset.
-                // Classic icon + label tabs retain their square press surface.
-                borderRadius: glass
-                    ? BorderRadius.circular((controlsHeight + inset) / 2)
-                    : BorderRadius.zero,
-                semanticLabel: items[i].label.l10n(context),
-                selected: selection == i,
-                onTap: () => onSelect(i),
-                child: Padding(
-                  // iOS centres content above its compact indicator clearance.
-                  // Android system buttons occupy the whole reported inset;
-                  // retain the prior content padding while tabs still fill it.
-                  padding: EdgeInsets.only(
-                    bottom:
-                        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS
-                        ? 0
-                        : inset,
-                  ),
-                  child: Center(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: AppSpacing.xxs,
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          SizedBox(
-                            width: 36,
-                            height: 28,
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              alignment: Alignment.center,
-                              children: [
-                                TweenAnimationBuilder<double>(
-                                  duration: AppMotion.duration(
-                                    context,
-                                    AppMotion.responsive,
-                                  ),
-                                  curve: AppMotion.standard,
-                                  tween: Tween<double>(
-                                    end: selection == i ? 1 : 0,
-                                  ),
-                                  builder: (context, value, child) =>
-                                      Transform.translate(
-                                        offset: Offset(0, -value),
-                                        child: Transform.scale(
-                                          scale: 1 + value * 0.08,
-                                          child: AppIcon(
-                                            glass && selection == i
-                                                ? items[i].selectedIcon
-                                                : items[i].icon,
-                                            size: 24,
-                                            color: Color.lerp(
-                                              glass
-                                                  ? c.textPrimary
-                                                  : c.textTertiary,
-                                              AppTheme.brand,
-                                              value,
+              child: Semantics(
+                customSemanticsActions: items[i].index == 0
+                    ? {
+                        CustomSemanticsAction(
+                          label: AppStringKeys.chatFolderManagementMarkAllRead
+                              .l10n(context),
+                        ): _guardedTabRead(
+                          context,
+                        ),
+                      }
+                    : null,
+                child: AppInteractiveSurface(
+                  key: ValueKey('bottom-tab-${items[i].index}'),
+                  // The icon-only glass slot and selection share a full capsule,
+                  // concentric with the outer surface across its 5pt inset.
+                  // Classic icon + label tabs retain their square press surface.
+                  borderRadius: glass
+                      ? BorderRadius.circular((controlsHeight + inset) / 2)
+                      : BorderRadius.zero,
+                  semanticLabel: items[i].label.l10n(context),
+                  selected: selection == i,
+                  onTap: () => onSelect(i),
+                  onLongPress: items[i].index == 0
+                      ? () => _showTabReadMenu(context, items[i])
+                      : null,
+                  onSecondaryTap: items[i].index == 0
+                      ? () => _showTabReadMenu(context, items[i])
+                      : null,
+                  child: Padding(
+                    // iOS centres content above its compact indicator clearance.
+                    // Android system buttons occupy the whole reported inset;
+                    // retain the prior content padding while tabs still fill it.
+                    padding: EdgeInsets.only(
+                      bottom:
+                          !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS
+                          ? 0
+                          : inset,
+                    ),
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.xxs,
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: 36,
+                              height: 28,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                alignment: Alignment.center,
+                                children: [
+                                  TweenAnimationBuilder<double>(
+                                    duration: AppMotion.duration(
+                                      context,
+                                      AppMotion.responsive,
+                                    ),
+                                    curve: AppMotion.standard,
+                                    tween: Tween<double>(
+                                      end: selection == i ? 1 : 0,
+                                    ),
+                                    builder: (context, value, child) =>
+                                        Transform.translate(
+                                          offset: Offset(0, -value),
+                                          child: Transform.scale(
+                                            scale: 1 + value * 0.08,
+                                            child: AppIcon(
+                                              glass && selection == i
+                                                  ? items[i].selectedIcon
+                                                  : items[i].icon,
+                                              size: 24,
+                                              color: Color.lerp(
+                                                glass
+                                                    ? c.textPrimary
+                                                    : c.textTertiary,
+                                                AppTheme.brand,
+                                                value,
+                                              ),
                                             ),
                                           ),
                                         ),
-                                      ),
-                                ),
-                                if (i == 0 && unread > 0)
-                                  Positioned(
-                                    right: -14,
-                                    top: -2,
-                                    child: UnreadBadge(
-                                      count: unread,
-                                      onClear: onClearUnread,
-                                    ),
                                   ),
-                              ],
-                            ),
-                          ),
-                          // The glass row is icon-only: the label line and its
-                          // gutter are dropped, and the icon stays centred in
-                          // the slot. Every other target keeps the classic
-                          // icon + label column untouched.
-                          if (!glass) ...[
-                            const SizedBox(height: 2),
-                            AnimatedDefaultTextStyle(
-                              duration: AppMotion.duration(
-                                context,
-                                AppMotion.responsive,
-                              ),
-                              curve: AppMotion.standard,
-                              style: TextStyle(
-                                fontSize: _labelSize,
-                                fontWeight: selection == i
-                                    ? FontWeight.w600
-                                    : FontWeight.w400,
-                                color: selection == i
-                                    ? AppTheme.brand
-                                    : c.textTertiary,
-                              ),
-                              // A wrapped label would outgrow the bar; the tab
-                              // is identified by its icon either way.
-                              child: Text(
-                                items[i].label.l10n(context),
-                                textAlign: TextAlign.center,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                                  if (i == 0 && unread > 0)
+                                    Positioned(
+                                      right: -14,
+                                      top: -2,
+                                      child: UnreadBadge(
+                                        count: unread,
+                                        onClear: onClearUnread,
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
+                            // The glass row is icon-only: the label line and its
+                            // gutter are dropped, and the icon stays centred in
+                            // the slot. Every other target keeps the classic
+                            // icon + label column untouched.
+                            if (!glass) ...[
+                              const SizedBox(height: 2),
+                              AnimatedDefaultTextStyle(
+                                duration: AppMotion.duration(
+                                  context,
+                                  AppMotion.responsive,
+                                ),
+                                curve: AppMotion.standard,
+                                style: TextStyle(
+                                  fontSize: _labelSize,
+                                  fontWeight: selection == i
+                                      ? FontWeight.w600
+                                      : FontWeight.w400,
+                                  color: selection == i
+                                      ? AppTheme.brand
+                                      : c.textTertiary,
+                                ),
+                                // A wrapped label would outgrow the bar; the tab
+                                // is identified by its icon either way.
+                                child: Text(
+                                  items[i].label.l10n(context),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
                     ),
                   ),
@@ -2456,41 +2533,60 @@ class _MainBottomBar extends StatelessWidget {
     );
     final controls = controlsWithBottomInset(0.0);
     if (glass) {
-      // iOS hosts the real Liquid Glass: a native surface draws only the glass
-      // (public UIGlassEffect on iOS 26+, system material blur before), while
-      // the app-owned row, its selection pill, and every gesture stay in
-      // Flutter above the surface — one geometry source in any host, window
-      // bottom bar or sidebar column. The Flutter glass bar remains the
-      // fallback for every other target.
-      if (!kIsWeb &&
-          defaultTargetPlatform == TargetPlatform.iOS &&
-          !MediaQuery.highContrastOf(context)) {
+      // iOS 26+ uses the actual contained UIKit tab controller. No Flutter
+      // controls/selected pill paint above it. Older iOS keeps its existing
+      // generic-material + Flutter controls fallback; other targets unchanged.
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
         // A platform view has no insets of its own, so the host repeats the
         // exact containment chain the Flutter glass bar applies: the surface
         // stops at the bottom safe area instead of reaching under the home
         // indicator, and the shared lateral/top/capsule margins keep the row
         // inside the stadium at the same rect either host draws it at.
-        return SafeArea(
+        final fallback = SafeArea(
           top: false,
           minimum: const EdgeInsets.only(bottom: 10),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
             child: NativeGlassSurface(
-              child: Padding(
-                padding: const EdgeInsets.all(5),
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: GlassSelectionIndicator(
-                        selection: selection,
-                        itemCount: items.length,
-                      ),
-                    ),
-                    controls,
-                  ],
-                ),
-              ),
+              selection: selection,
+              itemCount: items.length,
+              child: Padding(padding: const EdgeInsets.all(5), child: controls),
             ),
+          ),
+        );
+        return SafeArea(
+          top: false,
+          bottom: false,
+          child: NativeTabBar(
+            items: [
+              for (final item in items)
+                NativeTabBarItem(
+                  id: item.index,
+                  label: item.label.l10n(context),
+                  icon: item.icon,
+                  selectedIcon: item.selectedIcon,
+                  unread: item.index == 0 ? unread : 0,
+                  onMarkAllRead: item.index == 0
+                      ? _guardedTabRead(context)
+                      : null,
+                ),
+            ],
+            selectedId: items[selection].index,
+            onSelect: (id) {
+              final position = items.indexWhere((item) => item.index == id);
+              if (position >= 0) onSelect(position);
+            },
+            reserveBottomInset: reserveBottomInset,
+            dark: c.navBar.computeLuminance() < 0.5,
+            tint: c.linkBlue,
+            markAllReadLabel: AppStringKeys.chatFolderManagementMarkAllRead
+                .l10n(context),
+            actionScope:
+                '${context.watch<AccountStore>().activeSlot}:'
+                '${TdClient.shared.activeClientId}:'
+                '${ModalRoute.of(context)?.hashCode}:'
+                '${ModalRoute.isCurrentOf(context)}',
+            fallback: fallback,
           ),
         );
       }
@@ -2507,6 +2603,112 @@ class _MainBottomBar extends StatelessWidget {
         border: Border(top: BorderSide(color: c.divider, width: 0.5)),
       ),
       child: controlsWithBottomInset(bottomInset),
+    );
+  }
+
+  VoidCallback _guardedTabRead(BuildContext context) {
+    final slot = TdClient.shared.activeSlot;
+    final client = TdClient.shared.activeClientId;
+    final accounts = context.read<AccountStore>();
+    final accountSlot = accounts.activeSlot;
+    final route = ModalRoute.of(context);
+    var used = false;
+    return () {
+      if (used ||
+          !context.mounted ||
+          TdClient.shared.activeSlot != slot ||
+          TdClient.shared.activeClientId != client ||
+          accounts.activeSlot != accountSlot ||
+          route?.isCurrent == false) {
+        return;
+      }
+      used = true;
+      // Existing callback: existing chat+archive scope and optimistic/error
+      // handling. Visual (unmuted/filtered) badge zero is NOT eligibility proof.
+      onClearUnread();
+    };
+  }
+
+  void _showTabReadMenu(BuildContext context, _MainTabItem item) {
+    final performRead = _guardedTabRead(context);
+    final accounts = context.read<AccountStore>();
+    final slot = accounts.activeSlot;
+    final client = TdClient.shared.activeClientId;
+    final navigator = Navigator.of(context);
+    ModalRoute<void>? menuRoute;
+    var requested = false;
+    void dismissIfAccountChanged() {
+      if (accounts.activeSlot == slot &&
+          TdClient.shared.activeClientId == client) {
+        return;
+      }
+      final route = menuRoute;
+      if (route?.isActive == true) navigator.removeRoute(route!);
+    }
+
+    accounts.addListener(dismissIfAccountChanged);
+    unawaited(
+      showAppModalSheet<void>(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (sheetContext) {
+          menuRoute = ModalRoute.of<void>(sheetContext);
+          if (ModalRoute.isCurrentOf(sheetContext) == false &&
+              !requested &&
+              menuRoute?.animation?.status != AnimationStatus.reverse) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              final route = menuRoute;
+              if (route?.isActive == true) navigator.removeRoute(route!);
+            });
+          }
+          return SafeArea(
+            child: Container(
+              key: const ValueKey('tab-read-menu'),
+              margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              decoration: BoxDecoration(
+                color: sheetContext.colors.card,
+                borderRadius: BorderRadius.circular(AppRadius.lg),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(item.label.l10n(context)),
+                  ),
+                  AppInteractiveSurface(
+                    key: const ValueKey('tab-mark-all-read'),
+                    semanticLabel: AppStringKeys.chatFolderManagementMarkAllRead
+                        .l10n(context),
+                    onTap: () {
+                      requested = true;
+                      Navigator.of(sheetContext).pop();
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          const AppIcon(HeroAppIcons.circleCheck, size: 24),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              AppStringKeys.chatFolderManagementMarkAllRead
+                                  .l10n(context),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ).whenComplete(() {
+        accounts.removeListener(dismissIfAccountChanged);
+        if (requested) performRead();
+      }),
     );
   }
 }

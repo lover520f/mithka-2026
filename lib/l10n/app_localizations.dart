@@ -116,6 +116,74 @@ extension AppLocalizationsContext on BuildContext {
 }
 
 abstract final class AppStringKeys {
+  static const appIconBackgroundNeutral = 'appIconBackgroundNeutral';
+  static const appIconBackgroundPinkPurple = 'appIconBackgroundPinkPurple';
+  static const appIconBackgroundTelegramBlue = 'appIconBackgroundTelegramBlue';
+  static const appIconFreeCaption = 'appIconFreeCaption';
+  static const appIconFreeHeading = 'appIconFreeHeading';
+  static const appIconFreeToday = 'appIconFreeToday';
+  static const appIconLetterMNeutral = 'appIconLetterMNeutral';
+  static const appIconLetterMPinkPurple = 'appIconLetterMPinkPurple';
+  static const appIconLetterMTelegramBlue = 'appIconLetterMTelegramBlue';
+  static const appIconNextPenguin = 'appIconNextPenguin';
+  static const appIconPenguinCaption = 'appIconPenguinCaption';
+  static const appIconPenguinHeading = 'appIconPenguinHeading';
+  static const appIconPenguinNeutral = 'appIconPenguinNeutral';
+  static const appIconPenguinPinkPurple = 'appIconPenguinPinkPurple';
+  static const appIconPenguinSupporterCaption =
+      'appIconPenguinSupporterCaption';
+  static const appIconPenguinTelegramBlue = 'appIconPenguinTelegramBlue';
+  static const appIconPixelPenguinNeutral = 'appIconPixelPenguinNeutral';
+  static const appIconPixelPenguinPinkPurple = 'appIconPixelPenguinPinkPurple';
+  static const appIconPixelPenguinTelegramBlue =
+      'appIconPixelPenguinTelegramBlue';
+  static const appIconSelectedFreeToday = 'appIconSelectedFreeToday';
+  static const appIconUse = 'appIconUse';
+  static const appIconUseHint = 'appIconUseHint';
+
+  static const appIconCurrentHeading = 'appIconCurrentHeading';
+  static const appIconCurrentNote = 'appIconCurrentNote';
+
+  static const appIconBasketball = 'appIconBasketball';
+  static const appIconBubblegum = 'appIconBubblegum';
+  static const appIconChef = 'appIconChef';
+  static const appIconChoir = 'appIconChoir';
+  static const appIconDance = 'appIconDance';
+  static const appIconDragon = 'appIconDragon';
+  static const appIconDrummer = 'appIconDrummer';
+  static const appIconFootball = 'appIconFootball';
+  static const appIconGardener = 'appIconGardener';
+  static const appIconGuitar = 'appIconGuitar';
+  static const appIconHighFive = 'appIconHighFive';
+  static const appIconHug = 'appIconHug';
+  static const appIconIceCream = 'appIconIceCream';
+  static const appIconMagician = 'appIconMagician';
+  static const appIconMailCarrier = 'appIconMailCarrier';
+  static const appIconMotifLetterM = 'appIconMotifLetterM';
+  static const appIconMotifPenguin = 'appIconMotifPenguin';
+  static const appIconMotifPixelPenguin = 'appIconMotifPixelPenguin';
+  static const appIconNinja = 'appIconNinja';
+  static const appIconNoodles = 'appIconNoodles';
+  static const appIconPainter = 'appIconPainter';
+  static const appIconPaperPlanes = 'appIconPaperPlanes';
+  static const appIconParade = 'appIconParade';
+  static const appIconPhotographer = 'appIconPhotographer';
+  static const appIconPicnic = 'appIconPicnic';
+  static const appIconPillowFight = 'appIconPillowFight';
+  static const appIconPirate = 'appIconPirate';
+  static const appIconRaincoat = 'appIconRaincoat';
+  static const appIconReader = 'appIconReader';
+  static const appIconScientist = 'appIconScientist';
+  static const appIconSeesaw = 'appIconSeesaw';
+  static const appIconSkateboard = 'appIconSkateboard';
+  static const appIconSkiing = 'appIconSkiing';
+  static const appIconSnowball = 'appIconSnowball';
+  static const appIconStack = 'appIconStack';
+  static const appIconStargazing = 'appIconStargazing';
+  static const appIconSunflower = 'appIconSunflower';
+  static const appIconSurfboard = 'appIconSurfboard';
+  static const appIconTennis = 'appIconTennis';
+
   static const appearancePreviewChatTextSample =
       'appearancePreviewChatTextSample';
   static const appearancePreviewMessageSample =
@@ -273,9 +341,7 @@ abstract final class AppStringKeys {
   static const supporterIconLockedHint = 'supporterIconLockedHint';
   static const supporterIconRequired = 'supporterIconRequired';
   static const supporterIconSelected = 'supporterIconSelected';
-  static const supporterIcons = 'supporterIcons';
   static const supporterIconsBenefit = 'supporterIconsBenefit';
-  static const supporterIconsCaption = 'supporterIconsCaption';
   static const supporterIconsMobileBenefit = 'supporterIconsMobileBenefit';
   static const supporterNothingToRestoreGoogle =
       'supporterNothingToRestoreGoogle';
@@ -514,6 +580,9 @@ abstract final class AppStringKeys {
   static const appearanceChatListFolderSwipeSwitching =
       'appearanceChatListFolderSwipeSwitching';
   static const appearanceChatView = 'appearanceChatView';
+  static const appearanceSimpleMode = 'appearanceSimpleMode';
+  static const appearanceSimpleModeDescription =
+      'appearanceSimpleModeDescription';
   static const appearanceMessageBubbles = 'appearanceMessageBubbles';
   static const appearanceShowMessageBubbles = 'appearanceShowMessageBubbles';
   static const appearanceShowMessageBubblesDescription =
@@ -1003,6 +1072,8 @@ abstract final class AppStringKeys {
   static const chatListDeleteChatQuestion = 'chatListDeleteChatQuestion';
   static const chatListLeaveAndDeleteGroupConfirmation =
       'chatListLeaveAndDeleteGroupConfirmation';
+  static const chatListLocalPinEnabled = 'chatListLocalPinEnabled';
+  static const chatListLocalPinLimitReached = 'chatListLocalPinLimitReached';
   static const chatListMarkUnread = 'chatListMarkUnread';
   static const desktopChatOpenSeparate = 'desktopChatOpenSeparate';
   static const desktopChatWindowUnavailable = 'desktopChatWindowUnavailable';
@@ -1173,6 +1244,7 @@ abstract final class AppStringKeys {
   static const chatUsersJoinedGroup = 'chatUsersJoinedGroup';
   static const chatUserTyping = 'chatUserTyping';
   static const chatVideoPlaceholder = 'chatVideoPlaceholder';
+  static const chatViewAsMoments = 'chatViewAsMoments';
   static const chatWallpaperApply = 'chatWallpaperApply';
   static const chatWallpaperApplyForBoth = 'chatWallpaperApplyForBoth';
   static const chatWallpaperApplyForMe = 'chatWallpaperApplyForMe';
@@ -1286,6 +1358,14 @@ abstract final class AppStringKeys {
   static const composerRecordingReleasePreview =
       'composerRecordingReleasePreview';
   static const composerRecordingSendFailed = 'composerRecordingSendFailed';
+  static const composerRecordingStop = 'composerRecordingStop';
+  static const composerRecordingResume = 'composerRecordingResume';
+  static const composerRecordingTrimStart = 'composerRecordingTrimStart';
+  static const composerRecordingTrimEnd = 'composerRecordingTrimEnd';
+  static const composerVoiceCaptionPlaceholder =
+      'composerVoiceCaptionPlaceholder';
+  static const composerAttachmentWaiting = 'composerAttachmentWaiting';
+  static const composerCaptionTooLong = 'composerCaptionTooLong';
   static const composerImage = 'composerImage';
   static const composerImagePreview = 'composerImagePreview';
   static const composerScreenshot = 'composerScreenshot';
@@ -1309,6 +1389,8 @@ abstract final class AppStringKeys {
   static const composerOpenAttachmentFailed = 'composerOpenAttachmentFailed';
   static const composerOpenMenu = 'composerOpenMenu';
   static const composerCloseMenu = 'composerCloseMenu';
+  static const composerMoreActions = 'composerMoreActions';
+  static const composerShowKeyboard = 'composerShowKeyboard';
   static const composerPaidMessageCost = 'composerPaidMessageCost';
   static const composerPastedImageReadFailed = 'composerPastedImageReadFailed';
   static const composerPoll = 'composerPoll';
@@ -2071,6 +2153,8 @@ abstract final class AppStringKeys {
   static const loginFirstName = 'loginFirstName';
   static const loginGetVerificationCode = 'loginGetVerificationCode';
   static const loginLastNameOptional = 'loginLastNameOptional';
+  static const loginMethodPhoneNumber = 'loginMethodPhoneNumber';
+  static const loginMethodQrCode = 'loginMethodQrCode';
   static const loginNewAccountNicknamePrompt = 'loginNewAccountNicknamePrompt';
   static const loginPasswordHint = 'loginPasswordHint';
   static const loginPhoneNumberWithCountryCode =
@@ -4301,8 +4385,6 @@ abstract final class AppStringKeys {
       'videoNoteRecorderCancelRecording';
   static const videoNoteRecorderCloseCamera = 'videoNoteRecorderCloseCamera';
   static const videoNoteRecorderSwitchCamera = 'videoNoteRecorderSwitchCamera';
-  static const voiceNotePreviewReviewTheRecordingBeforeSendingSendOptionsInclude =
-      'voiceNotePreviewReviewTheRecordingBeforeSendingSendOptionsInclude';
   static const voiceNotePreviewVoiceMessage = 'voiceNotePreviewVoiceMessage';
   static const accountSecurityANewCodeWasSent =
       'accountSecurityANewCodeWasSent';

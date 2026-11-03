@@ -26,6 +26,7 @@ import '../app/chat_pane.dart';
 import '../app/desktop_video_window.dart';
 import '../app/ipad_window_chrome.dart';
 import '../app/primary_chat_launcher.dart';
+import '../app/top_corner_cluster.dart';
 import '../app/video_split_controller.dart';
 import '../auth/account_store.dart';
 import '../auth/telegram_country_names.dart';
@@ -48,6 +49,7 @@ import '../components/toast.dart';
 import '../components/ui_components.dart';
 import '../media/app_asset_picker.dart';
 import '../media/media_metadata.dart';
+import '../moments/moments_view.dart' show ChannelMomentsView;
 import '../moments/story_viewer_view.dart';
 import '../notifications/notification_controller.dart';
 import '../platform/desktop_clipboard_images.dart';
@@ -5463,6 +5465,12 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// Opens a link as this transcript, even though the State's context is above
+  /// its [InternalChatLinkScope]: the scope's target is re-supplied so the
+  /// navigation request carries the owning chat and account.
+  Future<void> _openLinkFromTranscript(BuildContext context, String url) =>
+      openLink(context, url, sourceChat: _internalLinkTarget);
+
   Future<void> _pressMessageButton(
     ChatMessage message,
     MessageButton button,
@@ -5487,12 +5495,12 @@ class _ChatViewState extends State<ChatView> {
         showToast(context, AppStrings.t(AppStringKeys.miniAppCannotStart));
         return;
       }
-      await openLink(context, url);
+      await _openLinkFromTranscript(context, url);
       return;
     }
     final userId = button.userId;
     if (userId != null && userId > 0) {
-      await openLink(context, 'tg://user?id=$userId');
+      await _openLinkFromTranscript(context, 'tg://user?id=$userId');
       return;
     }
     final copyText = button.copyText;
@@ -5509,7 +5517,7 @@ class _ChatViewState extends State<ChatView> {
         if (!mounted) return;
         final answerUrl = answer.str('url');
         if (answerUrl != null && answerUrl.isNotEmpty) {
-          await openLink(context, answerUrl);
+          await _openLinkFromTranscript(context, answerUrl);
           return;
         }
         final text = answer.str('text');
@@ -5541,7 +5549,7 @@ class _ChatViewState extends State<ChatView> {
       _vm.activateInlineQuery(username);
       return;
     }
-    await openLink(context, 'https://t.me/$username');
+    await _openLinkFromTranscript(context, 'https://t.me/$username');
   }
 
   Future<void> _activateSwitchInlineButton(
@@ -7037,16 +7045,22 @@ class _ChatViewState extends State<ChatView> {
         : TelegramMessageColors.fromChatThemeStyle(style);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    Widget withInternalLinkRouting(Widget child) => InternalChatLinkScope(
-      target: InternalChatLinkTarget(
+  /// The link-routing target this transcript mounts below its subtree. Kept
+  /// as a field so handlers running on the State's own context — which sits
+  /// ABOVE the scope, so `InternalChatLinkScope.targetOf(context)` returns
+  /// null there — can still open links as this chat, on this account (a
+  /// multi-account shell otherwise drops the account-less request silently).
+  late final InternalChatLinkTarget _internalLinkTarget =
+      InternalChatLinkTarget(
         chatId: widget.chatId,
         accountSlot: _sessionKey.accountSlot,
         openMessage: _scrollToMessage,
-      ),
-      child: child,
-    );
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    Widget withInternalLinkRouting(Widget child) =>
+        InternalChatLinkScope(target: _internalLinkTarget, child: child);
 
     _shellLayoutGeneration++;
     final c = context.colors;
@@ -8176,12 +8190,13 @@ class _ChatViewState extends State<ChatView> {
   // ChatInputBar subscribes to the view model itself, so the parent's
   // notification-driven rebuilds only re-run its build for nothing. Every other
   // constructor argument is either the (final) view model or a method tear-off,
-  // so these four flags are the whole input set.
+  // so these five flags are the whole input set.
   Widget? _composerBarCache;
   bool _composerBarRequestInitialFocus = false;
   bool _composerBarEnterToSend = false;
   bool _composerBarQuickRepliesEnabled = false;
   bool _composerBarShowCallAction = false;
+  bool _composerBarSimpleMode = false;
 
   Widget _chatInputBar() {
     final themeController = context.watch<ThemeController>();
@@ -8189,24 +8204,28 @@ class _ChatViewState extends State<ChatView> {
     final enterToSend = themeController.enterToSend;
     final quickRepliesEnabled = themeController.quickRepliesEnabled;
     final showCallAction = !_usesWideGroupHeader;
+    final simpleMode = themeController.simpleMode;
     final cached = _composerBarCache;
     if (cached != null &&
         _composerBarRequestInitialFocus == requestInitialFocus &&
         _composerBarEnterToSend == enterToSend &&
         _composerBarQuickRepliesEnabled == quickRepliesEnabled &&
-        _composerBarShowCallAction == showCallAction) {
+        _composerBarShowCallAction == showCallAction &&
+        _composerBarSimpleMode == simpleMode) {
       return cached;
     }
     _composerBarRequestInitialFocus = requestInitialFocus;
     _composerBarEnterToSend = enterToSend;
     _composerBarQuickRepliesEnabled = quickRepliesEnabled;
     _composerBarShowCallAction = showCallAction;
+    _composerBarSimpleMode = simpleMode;
     return _composerBarCache = ChatInputBar(
       vm: _vm,
       requestInitialFocus: requestInitialFocus,
       enterToSend: enterToSend,
       quickRepliesEnabled: quickRepliesEnabled,
       showCallAction: showCallAction,
+      simpleMode: simpleMode,
       onStartCall: _startCall,
       onMessageSent: _onComposerMessageSent,
       onPanelGeometryChanged: _onComposerPanelGeometryChanged,
@@ -8529,7 +8548,11 @@ class _ChatViewState extends State<ChatView> {
             key: const ValueKey('chatHeaderToolbar'),
             constraints: BoxConstraints(minHeight: widget.headerHeight),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
+              // Only the toolbar row meets the corner status cluster; the
+              // panels below it keep the full width.
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14) +
+                  TopClusterInsets.of(context),
               child: Row(
                 children: [
                   if (widget.showBackButton)
@@ -8567,6 +8590,13 @@ class _ChatViewState extends State<ChatView> {
                       label: AppStringKeys.chatSearchInThisChat.l10n(context),
                       icon: HeroAppIcons.magnifyingGlass,
                       onTap: _openSearch,
+                    ),
+                  if (_canViewAsMoments)
+                    _ChatHeaderAction(
+                      key: const ValueKey('chatHeaderViewAsMoments'),
+                      label: AppStringKeys.chatViewAsMoments.l10n(context),
+                      icon: HeroAppIcons.newspaper,
+                      onTap: () => unawaited(_openChannelMoments()),
                     ),
                   if (wideGroupHeader)
                     WideGroupChatHeaderActions(
@@ -8639,6 +8669,34 @@ class _ChatViewState extends State<ChatView> {
   /// field that can only ever report nothing.
   bool get _canSearchMessages =>
       !_vm.isPeerRestricted && (_vm.isMember || _vm.messages.isNotEmpty);
+
+  /// A broadcast channel's posts also read as a Moments feed. The join screen
+  /// and a restricted channel have no posts to show there.
+  bool get _canViewAsMoments =>
+      _vm.isChannel && _vm.forumTopicId == null && _canSearchMessages;
+
+  Future<void> _openChannelMoments() async {
+    ChatSummary? channel;
+    try {
+      channel = TDParse.chat(
+        await TdClient.shared.queryForSlot({
+          '@type': 'getChat',
+          'chat_id': _vm.chatId,
+        }, _vm.accountSlot),
+      );
+    } catch (_) {}
+    if (!mounted) return;
+    if (channel == null) {
+      showToast(context, AppStringKeys.topicPostContentActionFailed);
+      return;
+    }
+    final feedChannel = channel;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChannelMomentsView(channel: feedChannel),
+      ),
+    );
+  }
 
   bool get _usesWideGroupHeader {
     return wideGroupHeaderActionsEnabled(
@@ -9088,7 +9146,7 @@ class _ChatViewState extends State<ChatView> {
     final c = context.colors;
     final count = _selectedMessageIds.length;
     return Container(
-      padding: EdgeInsets.only(top: topChromeInsetOf(context)),
+      padding: headerChromePaddingOf(context),
       decoration: BoxDecoration(
         color: c.navBar,
         border: Border(bottom: BorderSide(color: c.divider, width: 0.5)),
@@ -10870,6 +10928,7 @@ class _ChatViewState extends State<ChatView> {
         isGroup: _vm.isGroup,
         meName: _vm.meName,
         mePhoto: _vm.mePhoto,
+        meId: _vm.meId,
         hasCustomChatTheme: _hasCustomChatTheme,
         showCommentAttachment: chatTranscriptAllowsCommentAttachment(
           isChannel: _vm.isChannel,

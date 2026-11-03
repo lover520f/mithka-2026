@@ -17,6 +17,36 @@ class AppStoreReleaseTest < Minitest::Test
   SUBMISSION_ID = "51460acf-3238-49cc-bf75-1f4687bb73cd"
   UPLOADED_BUILD_ID = "28ad1b06-7884-4482-ae22-5c1b315e97c9"
   GITHUB_RUN_ID = "31586409622"
+  # Mithka Pro as Apple reports it inside an open iOS review submission.
+  PLAN_ITEMS = [
+    ["group-item", "subscriptionGroupVersion", "group-version"],
+    ["monthly-item", "subscriptionVersion", "monthly-version"],
+    ["yearly-item", "subscriptionVersion", "yearly-version"]
+  ].freeze
+  PLAN_ROUTES = {
+    ["/subscriptionGroupVersions/group-version", { "include" => "subscriptionGroup" }] => {
+      "included" => [{ "type" => "subscriptionGroups", "attributes" => { "referenceName" => "Mithka Pro" } }]
+    },
+    ["/subscriptionVersions/monthly-version", { "include" => "subscription" }] => {
+      "included" => [{ "type" => "subscriptions", "attributes" => { "productId" => "ad.neko.mithka.pro.monthly" } }]
+    },
+    ["/subscriptionVersions/yearly-version", { "include" => "subscription" }] => {
+      "included" => [{ "type" => "subscriptions", "attributes" => { "productId" => "ad.neko.mithka.pro.yearly" } }]
+    }
+  }.freeze
+
+  def self.plan_items(state = "READY_FOR_REVIEW")
+    PLAN_ITEMS.map do |id, relationship, target|
+      {
+        "id" => id,
+        "attributes" => { "state" => state },
+        "relationships" => {
+          "appStoreVersion" => { "data" => nil },
+          relationship => { "data" => { "type" => "#{relationship}s", "id" => target } }
+        }
+      }
+    end
+  end
 
   class FakeGitHubVerifier
     attr_reader :calls
@@ -59,7 +89,8 @@ class AppStoreReleaseTest < Minitest::Test
 
     def initialize(version_state: "PREPARE_FOR_SUBMISSION", has_item: false,
                    item_state: "READY_FOR_REVIEW", submission_state: "READY_FOR_REVIEW",
-                   platform: "IOS")
+                   platform: "IOS", plans: false)
+      @plans = plans
       @version_string = "0.7.41"
       @version_state = version_state
       @has_item = has_item
@@ -87,7 +118,7 @@ class AppStoreReleaseTest < Minitest::Test
             }
           }]
         }
-      when ["/reviewSubmissions/#{SUBMISSION_ID}/items", { "include" => "appStoreVersion", "limit" => "200" }]
+      when ["/reviewSubmissions/#{SUBMISSION_ID}/items", { "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200" }]
         items = if @has_item
                   [{
                     "id" => "item",
@@ -101,11 +132,14 @@ class AppStoreReleaseTest < Minitest::Test
                 else
                   []
                 end
+        items += AppStoreReleaseTest.plan_items if @plans
         { "data" => items }
       when ["/apps/#{APP_ID}/appStoreVersions", { "filter[platform]" => "IOS", "filter[versionString]" => "0.7.0", "limit" => "50" }]
         { "data" => [] }
       when ["/reviewSubmissions/#{SUBMISSION_ID}", {}]
         { "data" => { "id" => SUBMISSION_ID, "attributes" => { "state" => @submission_state } } }
+      when *PLAN_ROUTES.keys
+        PLAN_ROUTES.fetch([path, params])
       else
         raise "unexpected GET #{path} #{params}"
       end
@@ -115,6 +149,7 @@ class AppStoreReleaseTest < Minitest::Test
       @writes << [:post, path, body]
       raise "unexpected POST #{path}" unless path == "/reviewSubmissionItems"
 
+      @has_item = true
       { "data" => { "id" => "item", "attributes" => { "state" => "READY_FOR_REVIEW" } } }
     end
 
@@ -150,6 +185,130 @@ class AppStoreReleaseTest < Minitest::Test
     assert_includes output.string, "listing version 0.7.41"
     assert_includes output.string, "PLAN submit through reviewSubmissions"
     assert_includes output.string, "no App Store Connect state was changed"
+  end
+
+  def inherited_locale_routes
+    routes = base_routes
+    notes = MithkaAppStoreRelease::DEFAULT_RELEASE_NOTES
+    locales = notes.map do |locale, text|
+      { "id" => locale, "attributes" => { "locale" => locale, "whatsNew" => text,
+        "description" => "Description", "keywords" => "chat", "supportUrl" => "https://example.com" } }
+    end
+    locales += [
+      { "id" => "canada", "attributes" => { "locale" => "en-CA", "whatsNew" => nil } },
+      { "id" => "french", "attributes" => { "locale" => "fr-FR", "whatsNew" => "Curated French notes." } }
+    ]
+    routes[["/appStoreVersions/#{TARGET_VERSION_ID}/appStoreVersionLocalizations", { "limit" => "200" }]] = { "data" => locales }
+    routes
+  end
+
+  def test_empty_inherited_release_notes_are_planned_without_writes
+    client = FakeClient.new(inherited_locale_routes)
+    output = StringIO.new
+    build_runner(client, output).send(:sync_version_metadata, TARGET_VERSION_ID, MithkaAppStoreRelease::DEFAULT_RELEASE_NOTES)
+    assert_empty client.writes
+    assert_includes output.string, "PLAN fill empty en-CA release notes"
+    refute_includes output.string, "fr-FR"
+  end
+
+  def test_only_empty_inherited_notes_receive_the_english_fallback
+    client = FakeClient.new(inherited_locale_routes)
+    client.define_singleton_method(:patch) do |path, body|
+      writes << [:patch, path, body]
+      { "data" => body.fetch("data") }
+    end
+    build_runner(client, StringIO.new, apply: true).send(:sync_version_metadata, TARGET_VERSION_ID, MithkaAppStoreRelease::DEFAULT_RELEASE_NOTES)
+    assert_equal 1, client.writes.length
+    assert_equal "/appStoreVersionLocalizations/canada", client.writes.first[1]
+    assert_equal({ "whatsNew" => MithkaAppStoreRelease::DEFAULT_RELEASE_NOTES.fetch("en-US") }, client.writes.first.last.dig("data", "attributes"))
+  end
+
+  def draft_routes(states: ["PREPARE_FOR_SUBMISSION"], version: "0.7.40")
+    routes = base_routes
+    drafts = states.each_with_index.map do |state, index|
+      {
+        "id" => index.zero? ? TARGET_VERSION_ID : "other-draft",
+        "attributes" => { "appStoreState" => state, "versionString" => version, "releaseType" => "MANUAL" }
+      }
+    end
+    routes[["/apps/#{APP_ID}/appStoreVersions", { "filter[platform]" => "IOS", "limit" => "200" }]] = { "data" => drafts }
+    routes[["/appStoreVersions/#{TARGET_VERSION_ID}", { "include" => "build" }]] = { "data" => drafts.first }
+    routes
+  end
+
+  def test_draft_rename_dry_run_never_writes
+    client = FakeClient.new(draft_routes)
+    output = StringIO.new
+    draft = build_runner(client, output).send(:reuse_editable_draft)
+
+    assert_equal TARGET_VERSION_ID, draft.fetch("id")
+    assert_empty client.writes
+    assert_includes output.string, "PLAN update existing iOS draft 0.7.40 to 0.7.41"
+  end
+
+  def test_draft_rename_attaches_exact_build_and_preserves_other_metadata
+    client = FakeClient.new(draft_routes)
+    client.define_singleton_method(:patch) do |path, body|
+      writes << [:patch, path, body]
+      { "data" => body.fetch("data").merge("attributes" => body.fetch("data").fetch("attributes").merge("appStoreState" => "PREPARE_FOR_SUBMISSION")) }
+    end
+    runner = build_runner(client, StringIO.new, apply: true)
+    runner.instance_variable_set(:@resolved_build_id, BUILD_ID)
+    runner.send(:reuse_editable_draft)
+
+    assert_equal 1, client.writes.length
+    payload = client.writes.first.last.fetch("data")
+    assert_equal({ "versionString" => "0.7.41", "releaseType" => "AFTER_APPROVAL" }, payload.fetch("attributes"))
+    assert_equal BUILD_ID, payload.dig("relationships", "build", "data", "id")
+    assert_equal ["build"], payload.fetch("relationships").keys
+  end
+
+  def test_draft_rename_refuses_multiple_or_noneditable_active_versions
+    [["PREPARE_FOR_SUBMISSION", "PREPARE_FOR_SUBMISSION"], ["WAITING_FOR_REVIEW"], ["REJECTED"]].each do |states|
+      client = FakeClient.new(draft_routes(states: states))
+      assert_raises(MithkaAppStoreRelease::Error) { build_runner(client, StringIO.new).send(:reuse_editable_draft) }
+      assert_empty client.writes
+    end
+  end
+
+  def test_draft_rename_refuses_a_newer_version_or_concurrent_review
+    ["0.7.42", "0.7.41"].each do |version|
+      client = FakeClient.new(draft_routes(version: version))
+      assert_raises(MithkaAppStoreRelease::Error) { build_runner(client, StringIO.new).send(:reuse_editable_draft) }
+      assert_empty client.writes
+    end
+    routes = draft_routes
+    routes[["/apps/#{APP_ID}/reviewSubmissions", { "filter[platform]" => "IOS", "limit" => "200" }]] = { "data" => [{ "id" => "active", "attributes" => { "state" => "WAITING_FOR_REVIEW" } }] }
+    routes[["/reviewSubmissions/active/items", { "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200" }]] = { "data" => [] }
+    client = FakeClient.new(routes)
+    assert_raises(MithkaAppStoreRelease::Error) { build_runner(client, StringIO.new).send(:reuse_editable_draft) }
+    assert_empty client.writes
+
+    # Only Mithka Pro waiting for an app version does not block the rename;
+    # any other product, or a missing plan, still does.
+    routes.merge!(PLAN_ROUTES)
+    routes[["/reviewSubmissions/active/items", { "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200" }]] = { "data" => self.class.plan_items }
+    client = FakeClient.new(routes)
+    assert_equal TARGET_VERSION_ID, build_runner(client, StringIO.new).send(:reuse_editable_draft).fetch("id")
+    assert_empty client.writes
+    routes[["/reviewSubmissions/active/items", { "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200" }]] = { "data" => self.class.plan_items.first(2) }
+    client = FakeClient.new(routes)
+    assert_raises(MithkaAppStoreRelease::Error) { build_runner(client, StringIO.new).send(:reuse_editable_draft) }
+    routes[["/subscriptionVersions/yearly-version", { "include" => "subscription" }]] = {
+      "included" => [{ "type" => "subscriptions", "attributes" => { "productId" => "com.example.other" } }]
+    }
+    routes[["/reviewSubmissions/active/items", { "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200" }]] = { "data" => self.class.plan_items }
+    client = FakeClient.new(routes)
+    assert_raises(MithkaAppStoreRelease::Error) { build_runner(client, StringIO.new).send(:reuse_editable_draft) }
+    assert_empty client.writes
+  end
+
+  def test_draft_rename_rechecks_state_before_mutation
+    routes = draft_routes
+    routes[["/appStoreVersions/#{TARGET_VERSION_ID}", { "include" => "build" }]]["data"]["attributes"]["appStoreState"] = "WAITING_FOR_REVIEW"
+    client = FakeClient.new(routes)
+    assert_raises(MithkaAppStoreRelease::Error) { build_runner(client, StringIO.new).send(:reuse_editable_draft) }
+    assert_empty client.writes
   end
 
   def test_macos_dry_run_uses_macos_versions_and_metadata_sources
@@ -384,23 +543,28 @@ class AppStoreReleaseTest < Minitest::Test
   end
 
   def test_mismatched_binary_is_submitted_without_renaming_listing
-    client = SubmissionClient.new
-    runner = build_runner(client, StringIO.new, apply: true)
+    # The open submission may already hold Mithka Pro; the version joins it.
+    [false, true].each do |plans|
+      client = SubmissionClient.new(plans: plans)
+      output = StringIO.new
+      runner = build_runner(client, output, apply: true)
 
-    submission = runner.send(:ensure_submission, TARGET_VERSION_ID)
+      submission = runner.send(:ensure_submission, TARGET_VERSION_ID)
 
-    assert_equal "WAITING_FOR_REVIEW", submission.dig("attributes", "state")
-    mutations = client.writes.map do |method, path, body|
-      if path == "/appStoreVersions/#{TARGET_VERSION_ID}"
-        [method, path, body.dig("data", "attributes", "versionString")]
-      else
-        [method, path]
+      assert_equal "WAITING_FOR_REVIEW", submission.dig("attributes", "state")
+      mutations = client.writes.map do |method, path, body|
+        if path == "/appStoreVersions/#{TARGET_VERSION_ID}"
+          [method, path, body.dig("data", "attributes", "versionString")]
+        else
+          [method, path]
+        end
       end
+      assert_equal [
+        [:post, "/reviewSubmissionItems"],
+        [:patch, "/reviewSubmissions/#{SUBMISSION_ID}"]
+      ], mutations
+      assert_equal plans, output.string.include?("Keep Mithka Pro group and 2 plans")
     end
-    assert_equal [
-      [:post, "/reviewSubmissionItems"],
-      [:patch, "/reviewSubmissions/#{SUBMISSION_ID}"]
-    ], mutations
   end
 
   def test_dry_run_with_active_submission_never_writes
@@ -521,7 +685,7 @@ class AppStoreReleaseTest < Minitest::Test
       ["/apps/#{APP_ID}/reviewSubmissions", { "filter[platform]" => "IOS", "limit" => "200" }] => {
         "data" => [{ "id" => SUBMISSION_ID, "attributes" => { "state" => "READY_FOR_REVIEW" } }]
       },
-      ["/reviewSubmissions/#{SUBMISSION_ID}/items", { "include" => "appStoreVersion", "limit" => "200" }] => { "data" => [] }
+      ["/reviewSubmissions/#{SUBMISSION_ID}/items", { "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200" }] => { "data" => [] }
     )
     client = FakeClient.new(routes)
     output = StringIO.new
@@ -546,7 +710,99 @@ class AppStoreReleaseTest < Minitest::Test
     assert_includes output.string, "App Store release preparation verified"
   end
 
+  def test_completed_removed_history_does_not_hide_the_approved_submission
+    client = review_history_client([
+      ["COMPLETE", "REMOVED"], ["COMPLETE", "APPROVED"], ["COMPLETE", "REMOVED"]
+    ])
+    runner = build_runner(client, StringIO.new)
+
+    assert_equal "history-1", runner.send(:find_submission_for_version, TARGET_VERSION_ID).fetch("id")
+    assert_empty client.writes
+  end
+
+  def test_active_submission_takes_precedence_over_completed_history
+    client = review_history_client([["COMPLETE", "APPROVED"], ["IN_REVIEW", "IN_REVIEW"]])
+    runner = build_runner(client, StringIO.new)
+
+    assert_equal "history-1", runner.send(:find_submission_for_version, TARGET_VERSION_ID).fetch("id")
+  end
+
+  def test_multiple_active_submissions_remain_ambiguous
+    client = review_history_client([["IN_REVIEW", "IN_REVIEW"], ["WAITING_FOR_REVIEW", "WAITING_FOR_REVIEW"]])
+    runner = build_runner(client, StringIO.new)
+
+    assert_raises(MithkaAppStoreRelease::Error) { runner.send(:find_submission_for_version, TARGET_VERSION_ID) }
+    assert_empty client.writes
+  end
+
+  def test_multiple_completed_approved_submissions_remain_ambiguous
+    client = review_history_client([["COMPLETE", "APPROVED"], ["COMPLETE", "APPROVED"]])
+    runner = build_runner(client, StringIO.new)
+
+    assert_raises(MithkaAppStoreRelease::Error) { runner.send(:find_submission_for_version, TARGET_VERSION_ID) }
+  end
+
+  def test_completed_rejected_or_unrelated_items_are_not_silently_discarded
+    ["REJECTED", "UNRESOLVED_ISSUES", nil].each do |state|
+      client = review_history_client([["COMPLETE", "APPROVED"], ["COMPLETE", state]])
+      runner = build_runner(client, StringIO.new)
+      assert_raises(MithkaAppStoreRelease::Error) { runner.send(:find_submission_for_version, TARGET_VERSION_ID) }
+    end
+    client = review_history_client([["COMPLETE", "APPROVED"], ["COMPLETE", "REMOVED", SOURCE_VERSION_ID]])
+    runner = build_runner(client, StringIO.new)
+    assert_raises(MithkaAppStoreRelease::Error) { runner.send(:find_submission_for_version, TARGET_VERSION_ID) }
+  end
+
+  def test_only_removed_history_cannot_be_treated_as_a_submitted_version
+    client = review_history_client([["COMPLETE", "REMOVED"]])
+    runner = build_runner(client, StringIO.new)
+
+    assert_nil runner.send(:find_submission_for_version, TARGET_VERSION_ID)
+    assert_empty client.writes
+  end
+
+  def test_final_verification_rejects_a_removed_review_item
+    routes = base_routes.merge(submitted_routes)
+    item_route = ["/reviewSubmissions/#{SUBMISSION_ID}/items", {
+      "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200"
+    }]
+    routes.fetch(item_route).fetch("data").first.fetch("attributes")["state"] = "REMOVED"
+    client = FakeClient.new(routes)
+    error = assert_raises(MithkaAppStoreRelease::Error) do
+      build_runner(client, StringIO.new, apply: true).run
+    end
+
+    assert_includes error.message, "review item is REMOVED"
+    assert_empty client.writes
+  end
+
   private
+
+  def review_history_client(entries)
+    submissions = []
+    routes = {}
+    entries.each_with_index do |(state, item_state, item_version), index|
+      id = "history-#{index}"
+      submissions << {
+        "id" => id, "attributes" => { "state" => state },
+        "relationships" => {
+          "appStoreVersionForReview" => { "data" => { "id" => TARGET_VERSION_ID } }
+        }
+      }
+      routes[["/reviewSubmissions/#{id}/items", { "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion", "limit" => "200" }]] = {
+        "data" => [{
+          "id" => "item-#{index}", "attributes" => { "state" => item_state },
+          "relationships" => {
+            "appStoreVersion" => { "data" => { "id" => item_version || TARGET_VERSION_ID } }
+          }
+        }]
+      }
+    end
+    routes[["/apps/#{APP_ID}/reviewSubmissions", {
+      "filter[platform]" => "IOS", "include" => "appStoreVersionForReview", "limit" => "200"
+    }]] = { "data" => submissions }
+    FakeClient.new(routes)
+  end
 
   def build_runner(client, output, apply: false, platform: "IOS", version: "0.7.41", binary_version: "0.7.0")
     MithkaAppStoreRelease::Runner.new(
@@ -712,7 +968,7 @@ class AppStoreReleaseTest < Minitest::Test
         "data" => submission
       },
       ["/reviewSubmissions/#{SUBMISSION_ID}/items", {
-        "include" => "appStoreVersion",
+        "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion",
         "limit" => "200"
       }] => {
         "data" => [{
@@ -763,6 +1019,14 @@ class AppStoreReleaseTest < Minitest::Test
           "attributes" => { "platform" => platform, "version" => platform == "MAC_OS" ? "1.1.0" : "0.7.0" }
         }
       },
+      ["/apps/#{APP_ID}/appStoreVersions", {
+        "filter[platform]" => platform,
+        "limit" => "200"
+      }] => { "data" => [] },
+      ["/apps/#{APP_ID}/reviewSubmissions", {
+        "filter[platform]" => platform,
+        "limit" => "200"
+      }] => { "data" => [] },
       ["/apps/#{APP_ID}/appStoreVersions", {
         "filter[platform]" => platform,
         "filter[versionString]" => version,

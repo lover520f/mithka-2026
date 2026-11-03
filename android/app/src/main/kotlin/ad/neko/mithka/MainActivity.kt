@@ -218,11 +218,55 @@ class MainActivity : FlutterFragmentActivity() {
                         val freeIcons = setOf(
                             "default", "white", "blue", "purple",
                             "pixel", "aurora", "prism", "signal",
+                            "pixel_neutral",
+                            "pixel_gradient",
+                            "letter_m_neutral",
+                            "letter_m_gradient",
                         )
-                        val paidIcons = setOf(
+                        // The 48 penguins in their fixed catalogue order (01-pilot …
+                        // 48-stargazing). Must match AppIconVariant.dailyPenguinOrder in
+                        // lib/settings/app_icon_controller.dart and dailyPenguinOrder in
+                        // AppDelegate.swift; never sort it.
+                        val paidIcons = listOf(
                             "pilot", "headphones", "winter", "astronaut",
                             "crown", "party", "sleepy", "heart",
                             "coffee", "detective", "gamer", "fishing",
+                            "skateboard",
+                            "surfboard",
+                            "basketball",
+                            "football",
+                            "tennis",
+                            "skiing",
+                            "painter",
+                            "guitar",
+                            "drummer",
+                            "photographer",
+                            "magician",
+                            "chef",
+                            "reader",
+                            "scientist",
+                            "gardener",
+                            "mail-carrier",
+                            "pirate",
+                            "dragon",
+                            "bubblegum",
+                            "raincoat",
+                            "noodles",
+                            "ice-cream",
+                            "sunflower",
+                            "ninja",
+                            "high-five",
+                            "hug",
+                            "seesaw",
+                            "dance",
+                            "pillow-fight",
+                            "snowball",
+                            "parade",
+                            "choir",
+                            "stack",
+                            "picnic",
+                            "paper-planes",
+                            "stargazing",
                         )
                         fun applyIcon() {
                             runOnUiThread {
@@ -243,8 +287,15 @@ class MainActivity : FlutterFragmentActivity() {
                                 )
                             }
                         }
+                        // Today's penguin is free without Play billing evidence and on
+                        // every distribution. Compute the UTC day here at apply time,
+                        // never trusting Dart: floor(unixSeconds / 86400) mod 48.
+                        val utcDay = Math.floorDiv(System.currentTimeMillis(), 86_400_000L)
+                        val dailyPenguin =
+                            paidIcons[Math.floorMod(utcDay, paidIcons.size.toLong()).toInt()]
                         when (name) {
                             in freeIcons -> applyIcon()
+                            dailyPenguin -> applyIcon()
                             in paidIcons -> {
                                 val pro = mithkaPro
                                 if (pro == null) {
@@ -550,27 +601,39 @@ class MainActivity : FlutterFragmentActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mithka/media_editor")
             .setMethodCallHandler { call, result ->
-                if (call.method != "trimVideo") {
-                    result.notImplemented()
-                    return@setMethodCallHandler
-                }
-                val path = call.argument<String>("path")
-                val startMs = call.argument<Number>("startMs")?.toLong()
-                val endMs = call.argument<Number>("endMs")?.toLong()
-                if (path.isNullOrBlank() || startMs == null || endMs == null || startMs < 0 || endMs <= startMs) {
-                    result.error("invalid_arguments", "A valid video trim range is required", null)
-                    return@setMethodCallHandler
-                }
-                Thread {
-                    try {
-                        val output = trimVideo(path, startMs, endMs)
-                        runOnUiThread { result.success(output) }
-                    } catch (error: Exception) {
-                        runOnUiThread {
-                            result.error("video_trim_failed", error.localizedMessage, null)
+                when (call.method) {
+                    "trimVideo" -> {
+                        val path = call.argument<String>("path")
+                        val startMs = call.argument<Number>("startMs")?.toLong()
+                        val endMs = call.argument<Number>("endMs")?.toLong()
+                        if (path.isNullOrBlank() || startMs == null || endMs == null || startMs < 0 || endMs <= startMs) {
+                            result.error("invalid_arguments", "A valid video trim range is required", null)
+                            return@setMethodCallHandler
                         }
+                        Thread {
+                            try {
+                                val output = trimVideo(path, startMs, endMs)
+                                runOnUiThread { result.success(output) }
+                            } catch (error: Exception) {
+                                runOnUiThread {
+                                    result.error("video_trim_failed", error.localizedMessage, null)
+                                }
+                            }
+                        }.start()
                     }
-                }.start()
+                    // Android keeps the recording's 16:9 framing: see
+                    // VideoNoteCropper.kt for why no hand-written transcode is
+                    // shipped. Dart falls back to the original file.
+                    "cropVideoNote" -> {
+                        val path = call.argument<String>("path")
+                        if (path.isNullOrBlank()) {
+                            result.error("invalid_arguments", "A recorded video note path is required", null)
+                            return@setMethodCallHandler
+                        }
+                        result.error(VideoNoteCropper.UNSUPPORTED_CODE, VideoNoteCropper.UNSUPPORTED_REASON, null)
+                    }
+                    else -> result.notImplemented()
+                }
             }
         mediaDropChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -846,6 +909,46 @@ class MainActivity : FlutterFragmentActivity() {
         "detective" to "$packageName.MainActivityDetective",
         "gamer" to "$packageName.MainActivityGamer",
         "fishing" to "$packageName.MainActivityFishing",
+        "pixel_neutral" to "$packageName.MainActivityPixelNeutral",
+        "pixel_gradient" to "$packageName.MainActivityPixelGradient",
+        "letter_m_neutral" to "$packageName.MainActivityLetterMNeutral",
+        "letter_m_gradient" to "$packageName.MainActivityLetterMGradient",
+        "skateboard" to "$packageName.MainActivitySkateboard",
+        "surfboard" to "$packageName.MainActivitySurfboard",
+        "basketball" to "$packageName.MainActivityBasketball",
+        "football" to "$packageName.MainActivityFootball",
+        "tennis" to "$packageName.MainActivityTennis",
+        "skiing" to "$packageName.MainActivitySkiing",
+        "painter" to "$packageName.MainActivityPainter",
+        "guitar" to "$packageName.MainActivityGuitar",
+        "drummer" to "$packageName.MainActivityDrummer",
+        "photographer" to "$packageName.MainActivityPhotographer",
+        "magician" to "$packageName.MainActivityMagician",
+        "chef" to "$packageName.MainActivityChef",
+        "reader" to "$packageName.MainActivityReader",
+        "scientist" to "$packageName.MainActivityScientist",
+        "gardener" to "$packageName.MainActivityGardener",
+        "mail-carrier" to "$packageName.MainActivityMailCarrier",
+        "pirate" to "$packageName.MainActivityPirate",
+        "dragon" to "$packageName.MainActivityDragon",
+        "bubblegum" to "$packageName.MainActivityBubblegum",
+        "raincoat" to "$packageName.MainActivityRaincoat",
+        "noodles" to "$packageName.MainActivityNoodles",
+        "ice-cream" to "$packageName.MainActivityIceCream",
+        "sunflower" to "$packageName.MainActivitySunflower",
+        "ninja" to "$packageName.MainActivityNinja",
+        "high-five" to "$packageName.MainActivityHighFive",
+        "hug" to "$packageName.MainActivityHug",
+        "seesaw" to "$packageName.MainActivitySeesaw",
+        "dance" to "$packageName.MainActivityDance",
+        "pillow-fight" to "$packageName.MainActivityPillowFight",
+        "snowball" to "$packageName.MainActivitySnowball",
+        "parade" to "$packageName.MainActivityParade",
+        "choir" to "$packageName.MainActivityChoir",
+        "stack" to "$packageName.MainActivityStack",
+        "picnic" to "$packageName.MainActivityPicnic",
+        "paper-planes" to "$packageName.MainActivityPaperPlanes",
+        "stargazing" to "$packageName.MainActivityStargazing",
     )
 
     private fun currentLauncherIcon(): String {

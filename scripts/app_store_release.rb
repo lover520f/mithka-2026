@@ -49,6 +49,15 @@ module MithkaAppStoreRelease
     IN_REVIEW
     WAITING_FOR_REVIEW
   ].freeze
+  # Apple reviews first-time subscriptions only together with an app version,
+  # so an open iOS review submission may already hold Mithka Pro. These are
+  # the only non-version items a release may submit with its version.
+  SUBSCRIPTION_PRODUCT_IDS = %w[
+    ad.neko.mithka.pro.monthly
+    ad.neko.mithka.pro.yearly
+  ].freeze
+  SUBSCRIPTION_GROUP_NAME = "Mithka Pro"
+  SUBSCRIPTION_RELATIONSHIPS = %w[subscriptionVersion subscriptionGroupVersion].freeze
 
   class Error < StandardError; end
 
@@ -290,6 +299,7 @@ module MithkaAppStoreRelease
       build = resolve_exact_build
       @resolved_build_id = build.fetch("id")
       version = find_version
+      version ||= reuse_editable_draft
 
       if version.nil? && !@apply
         validate_copy_sources(release_notes)
@@ -556,6 +566,47 @@ module MithkaAppStoreRelease
       response.fetch("data")
     end
 
+    def reuse_editable_draft
+      versions = @client.get(
+        "/apps/#{@app_id}/appStoreVersions",
+        "filter[platform]" => @platform,
+        "limit" => "200"
+      ).fetch("data")
+      drafts = versions.select do |version|
+        state = version.dig("attributes", "appStoreState")
+        REVIEWABLE_VERSION_STATES.include?(state) ||
+          (SUBMITTED_VERSION_STATES.include?(state) && !%w[READY_FOR_SALE READY_FOR_DISTRIBUTION].include?(state))
+      end
+      return nil if drafts.empty?
+      raise Error, "another active #{platform_name} version needs attention" unless drafts.length == 1 && drafts.first.dig("attributes", "appStoreState") == "PREPARE_FOR_SUBMISSION"
+
+      draft = @client.get("/appStoreVersions/#{drafts.first.fetch('id')}", "include" => "build").fetch("data")
+      unless draft.dig("attributes", "appStoreState") == "PREPARE_FOR_SUBMISSION"
+        raise Error, "editable #{platform_name} draft changed state; refusing to replace it"
+      end
+      previous = draft.dig("attributes", "versionString").to_s
+      unless previous.match?(/\A\d+\.\d+\.\d+\z/) &&
+             (previous.split(".").map(&:to_i) <=> @version.split(".").map(&:to_i)) == -1
+        raise Error, "editable draft must have a lower normal version than #{@version}"
+      end
+      unless active_review_submissions.all? { |submission| subscription_only_submission?(submission) }
+        raise Error, "an active #{platform_name} review submission prevents renaming the draft"
+      end
+      log("#{@apply ? 'UPDATE' : 'PLAN update'} existing #{platform_name} draft #{previous} to #{@version}; preserve its listing assets and review details")
+      return draft unless @apply
+
+      @client.patch(
+        "/appStoreVersions/#{draft.fetch('id')}",
+        "data" => {
+          "type" => "appStoreVersions", "id" => draft.fetch("id"),
+          "attributes" => { "versionString" => @version, "releaseType" => "AFTER_APPROVAL" },
+          "relationships" => {
+            "build" => { "data" => { "type" => "builds", "id" => @resolved_build_id } }
+          }
+        }
+      ).fetch("data")
+    end
+
     def ensure_version_can_be_used!(version)
       state = version.dig("attributes", "appStoreState") || version.dig("attributes", "appVersionState")
       return if REVIEWABLE_VERSION_STATES.include?(state) || SUBMITTED_VERSION_STATES.include?(state)
@@ -644,6 +695,26 @@ module MithkaAppStoreRelease
               "id" => localization.fetch("id"),
               "attributes" => { "whatsNew" => notes }
             }
+          }
+        )
+      end
+
+      # ASC can inherit additional locales (for example en-CA) with empty
+      # release notes. Every inherited listing needs whatsNew before review.
+      # Preserve curated translations and fill only otherwise empty entries.
+      (existing.keys - release_notes.keys).each do |locale|
+        localization = existing.fetch(locale)
+        next unless localization.dig("attributes", "whatsNew").to_s.strip.empty?
+        unless @apply
+          log("PLAN fill empty #{locale} release notes with the en-US text")
+          next
+        end
+        log("FILL empty #{locale} release notes with the en-US text")
+        @client.patch(
+          "/appStoreVersionLocalizations/#{localization.fetch('id')}",
+          "data" => {
+            "type" => "appStoreVersionLocalizations", "id" => localization.fetch("id"),
+            "attributes" => { "whatsNew" => release_notes.fetch("en-US") }
           }
         )
       end
@@ -769,13 +840,16 @@ module MithkaAppStoreRelease
       if submission
         items = review_submission_items(submission.fetch("id"))
         item = items.find { |candidate| review_item_version_id(candidate) == version_id }
-        if items.any? { |candidate| review_item_version_id(candidate).nil? }
+        plans = items.select { |candidate| review_item_version_id(candidate).nil? }
+        unless plans.empty? || intended_subscription_items?(plans)
           raise Error, "active review submission #{submission['id']} contains items whose App Store versions cannot be resolved"
         end
-        unrelated = items.reject { |candidate| candidate == item }
+        unrelated = items.reject { |candidate| candidate == item || plans.include?(candidate) }
         unless unrelated.empty?
           raise Error, "active review submission #{submission['id']} contains another App Store version"
         end
+        @subscription_item_ids = plans.map { |candidate| candidate.fetch("id") }
+        log("Keep #{SUBSCRIPTION_GROUP_NAME} group and #{SUBSCRIPTION_PRODUCT_IDS.length} plans in review submission #{submission['id']}") unless plans.empty?
       elsif @apply
         log("CREATE review submission")
         submission = @client.post(
@@ -842,6 +916,7 @@ module MithkaAppStoreRelease
 
       submission = @client.get("/reviewSubmissions/#{submission.fetch('id')}").fetch("data")
       unless SUBMITTED_REVIEW_STATES.include?(submission.dig("attributes", "state"))
+        assert_submission_contents!(submission.fetch("id"), version_id)
         log("SUBMIT review submission #{submission['id']}")
         submission = @client.patch(
           "/reviewSubmissions/#{submission.fetch('id')}",
@@ -879,13 +954,63 @@ module MithkaAppStoreRelease
     def review_submission_items(submission_id)
       @client.get(
         "/reviewSubmissions/#{submission_id}/items",
-        "include" => "appStoreVersion",
+        "include" => "appStoreVersion,subscriptionVersion,subscriptionGroupVersion",
         "limit" => "200"
       ).fetch("data")
     end
 
     def review_item_version_id(item)
       item.dig("relationships", "appStoreVersion", "data", "id")
+    end
+
+    # True only for exactly the Mithka Pro group and both of its plans, each
+    # resolved through Apple's own subscription records.
+    def intended_subscription_items?(items)
+      groups = []
+      products = []
+      items.each do |item|
+        targets = SUBSCRIPTION_RELATIONSHIPS.filter_map do |name|
+          id = item.dig("relationships", name, "data", "id")
+          [name, id] if id
+        end
+        return false unless targets.length == 1
+        return false if %w[REMOVED REJECTED UNRESOLVED_ISSUES].include?(item.dig("attributes", "state"))
+
+        name, id = targets.first
+        if name == "subscriptionVersion"
+          included = @client.get("/subscriptionVersions/#{id}", "include" => "subscription").fetch("included", [])
+          products << included.find { |record| record["type"] == "subscriptions" }&.dig("attributes", "productId")
+        else
+          included = @client.get("/subscriptionGroupVersions/#{id}", "include" => "subscriptionGroup").fetch("included", [])
+          groups << included.find { |record| record["type"] == "subscriptionGroups" }&.dig("attributes", "referenceName")
+        end
+      end
+      groups == [SUBSCRIPTION_GROUP_NAME] && products.map(&:to_s).sort == SUBSCRIPTION_PRODUCT_IDS.sort
+    end
+
+    def subscription_only_submission?(submission)
+      return false unless @platform == "IOS"
+
+      items = review_submission_items(submission.fetch("id"))
+      items.none? { |item| review_item_version_id(item) } && intended_subscription_items?(items)
+    end
+
+    # Immediately before submitting: the version and every plan item found in
+    # the open submission are still there and still reviewable.
+    def assert_submission_contents!(submission_id, version_id)
+      items = review_submission_items(submission_id).to_h { |item| [item.fetch("id"), item] }
+      version_items = items.values.select { |item| review_item_version_id(item) == version_id }
+      unless version_items.length == 1 && !%w[REMOVED REJECTED UNRESOLVED_ISSUES].include?(version_items.first.dig("attributes", "state"))
+        raise Error, "review submission #{submission_id} does not hold version #{@version} ready to submit"
+      end
+      expected = @subscription_item_ids || []
+      plans = items.values.select { |item| review_item_version_id(item).nil? }
+      unless plans.map { |item| item.fetch("id") }.sort == expected.sort &&
+             (expected.empty? || intended_subscription_items?(plans))
+        raise Error, "review submission #{submission_id} changed its #{SUBSCRIPTION_GROUP_NAME} items before submission"
+      end
+      unrelated = items.values - version_items - plans
+      raise Error, "review submission #{submission_id} contains another App Store version" unless unrelated.empty?
     end
 
     def find_submission_for_version(version_id)
@@ -899,7 +1024,19 @@ module MithkaAppStoreRelease
         submission.dig("relationships", "appStoreVersionForReview", "data", "id") == version_id
       end
       active_matches = matches.reject { |submission| submission.dig("attributes", "state") == "COMPLETE" }
-      matches = active_matches unless active_matches.empty?
+      if active_matches.empty?
+        # Removing a version from an old submission leaves its completed
+        # submission associated with that version. Discard only records whose
+        # authoritative items for this exact version are all REMOVED.
+        matches = matches.reject do |submission|
+          items = review_submission_items(submission.fetch("id")).select do |item|
+            review_item_version_id(item) == version_id
+          end
+          !items.empty? && items.all? { |item| item.dig("attributes", "state") == "REMOVED" }
+        end
+      else
+        matches = active_matches
+      end
       if matches.length > 1
         raise Error, "multiple #{platform_name} review submissions are associated with App Store version #{@version}"
       end
@@ -943,8 +1080,11 @@ module MithkaAppStoreRelease
       items = review_submission_items(submission.fetch("id"))
       item = items.find { |candidate| review_item_version_id(candidate) == version_id }
       raise Error, "verification failed: review submission does not contain version #{@version}" unless item
-      if %w[REJECTED UNRESOLVED_ISSUES].include?(item.dig("attributes", "state"))
+      if %w[REJECTED UNRESOLVED_ISSUES REMOVED].include?(item.dig("attributes", "state"))
         raise Error, "verification failed: review item is #{item.dig('attributes', 'state')}"
+      end
+      unless (@subscription_item_ids || []).all? { |id| items.any? { |candidate| candidate.fetch("id") == id && candidate.dig("attributes", "state") != "REMOVED" } }
+        raise Error, "verification failed: #{SUBSCRIPTION_GROUP_NAME} left review submission #{submission['id']}"
       end
       log("SUBMITTED #{@version} (#{@build_number}) to App Review; submission #{submission['id']} is #{state}")
     end
