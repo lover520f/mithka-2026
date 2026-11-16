@@ -30,6 +30,7 @@ import 'package:provider/provider.dart';
 import 'package:record/record.dart' as desktop_record;
 
 import '../app/desktop_utility_window.dart';
+import '../app/diagnostic_breadcrumbs.dart';
 import '../components/app_dialog.dart';
 import '../components/app_icons.dart';
 import '../components/app_interactive_surface.dart';
@@ -44,6 +45,7 @@ import '../media/media_metadata.dart';
 import '../platform/desktop_clipboard_images.dart';
 import '../platform/desktop_screenshot.dart';
 import '../platform/keyboard_modifiers.dart';
+import '../platform/ohos_support.dart';
 import '../settings/ai_settings_controller.dart';
 import '../settings/ai_settings_view.dart';
 import '../settings/apple_pcc_api.dart';
@@ -104,8 +106,34 @@ import 'video_note_recorder_view.dart';
 import 'voice_draft_card.dart';
 import 'voice_note_trimmer.dart';
 import 'voice_recording_clock.dart';
+import 'voice_recording_session.dart';
 
-enum _Panel { none, function, emoji, sticker, voice, format }
+enum _Panel { none, function, emoji, sticker, voice }
+
+/// A desktop microphone the system refused to hand to this app.
+///
+/// Not a recorder exception: `record` reports it as `hasPermission() == false`,
+/// and on macOS the system prompt never appears again once it was refused.
+class DesktopMicrophoneRefused implements Exception {
+  const DesktopMicrophoneRefused();
+
+  @override
+  String toString() => 'desktop microphone refused';
+}
+
+/// A preparation failure whose cause was already reported to the user.
+///
+/// Opening the voice panel prepares the recorder in the background, and every
+/// press waits on that same preparation. Without this marker the open's single
+/// prompt would be repeated verbatim on each press until the panel is reopened.
+class _ReportedCaptureFailure implements Exception {
+  const _ReportedCaptureFailure(this.cause);
+
+  final Object cause;
+
+  @override
+  String toString() => 'reported capture failure: $cause';
+}
 
 /// The kind of media the unified composer panel is showing. Both
 /// `_Panel.emoji` and `_Panel.sticker` render the same unified media panel;
@@ -486,11 +514,12 @@ bool shouldRebuildComposerForVmUpdate({
 /// Whether the attachment strip offers the camera entry beside the image one.
 ///
 /// The camera entry (which opens the in-app camera, and whose capture is sent
-/// as a photo) is rendered on Android and iOS only; a desktop or web composer
-/// shows the screenshot entry instead. Exposed as a pure predicate so a widget
-/// test can pin the strip order on any host without overriding the target
-/// platform.
-bool composerShowsCameraIcon([TargetPlatform? platform]) {
+/// as a photo) is rendered on Android, iOS and HarmonyOS (which captures
+/// through the system camera); a desktop or web composer shows the screenshot
+/// entry instead. Exposed as a pure predicate so a widget test can pin the
+/// strip order on any host without overriding the target platform.
+bool composerShowsCameraIcon([TargetPlatform? platform, bool? onOhos]) {
+  if (platform == null && (onOhos ?? isOhos)) return true;
   final target = platform ?? defaultTargetPlatform;
   return target == TargetPlatform.android || target == TargetPlatform.iOS;
 }
@@ -502,6 +531,7 @@ class ChatInputBar extends StatefulWidget {
     required this.onStartCall,
     required this.onMessageSent,
     this.onPanelGeometryChanged,
+    this.onInputHeightChanged,
     this.onMediaSendTapped,
     this.gifPreviewBuilder,
     this.requestInitialFocus = false,
@@ -516,6 +546,9 @@ class ChatInputBar extends StatefulWidget {
     this.desktopVoiceRecorderFactory,
     this.mobileVoiceRecorderFactory,
     this.microphonePermissionForTesting,
+    this.voiceRecordingSession,
+    this.openAppSettingsForTesting,
+    this.onRecordingIssueForTesting,
     this.desktopScreenshotCapture,
     this.desktopClipboardAttachmentReader,
     this.desktopUtilityWindowLauncher,
@@ -532,6 +565,9 @@ class ChatInputBar extends StatefulWidget {
   final FutureOr<void> Function(bool isVideo) onStartCall;
   final VoidCallback onMessageSent;
   final VoidCallback? onPanelGeometryChanged;
+
+  /// The text field's own height changed as text wrapped or was removed.
+  final VoidCallback? onInputHeightChanged;
   final VoidCallback? onMediaSendTapped;
   @visibleForTesting
   final Widget Function(GifItem item)? gifPreviewBuilder;
@@ -558,6 +594,27 @@ class ChatInputBar extends StatefulWidget {
   final FlutterSoundRecorder Function()? mobileVoiceRecorderFactory;
   @visibleForTesting
   final Future<PermissionStatus> Function()? microphonePermissionForTesting;
+
+  /// Owns the shared audio session while the mobile recorder captures.
+  ///
+  /// Defaults to [SharedVoiceRecordingAudioSession]; a test passes a recorder
+  /// that throws the way an occupied native session does.
+  @visibleForTesting
+  final VoiceRecordingAudioSession? voiceRecordingSession;
+
+  /// Opens the platform's app-settings page for the microphone prompt.
+  ///
+  /// Defaults to `openAppSettings`; injectable so a widget test can assert the
+  /// prompt routed there without a live platform channel.
+  @visibleForTesting
+  final Future<bool> Function()? openAppSettingsForTesting;
+
+  /// Observes each user-facing recording problem, with the stage it came from.
+  ///
+  /// A toast is inserted into the root overlay, so counting renders cannot tell
+  /// one report from two; this seam pins that each tap reports exactly once.
+  @visibleForTesting
+  final void Function(String stage, Object? error)? onRecordingIssueForTesting;
   @visibleForTesting
   final DesktopScreenshotCapture? desktopScreenshotCapture;
   @visibleForTesting
@@ -631,20 +688,6 @@ class _ChatInputBarState extends State<ChatInputBar>
   int _syncedComposerFocusTick = 0;
   _Panel _panel = _Panel.none;
 
-  /// Selection the docked format panel formats, captured when the panel opens.
-  ///
-  /// Opening a panel unfocuses the field, which can collapse the live
-  /// selection; the panel keeps this range together with the draft content and
-  /// account it belonged to, and drops it as soon as any of those move.
-  _ComposerFormatCapture? _formatRange;
-
-  /// Monotonic stamp identifying the field's current text.
-  ///
-  /// Bumped on every change notification the field emits, so two drafts with
-  /// the same length still compare as different text.
-  int _composerTextRevision = 0;
-  String _lastComposerText = '';
-
   _MediaKind _mediaKind = _MediaKind.emoji;
   String _emojiTab = 'standard'; // 'standard' or a custom-emoji pack id
   int? _stickerPack; // active sticker pack id
@@ -660,6 +703,19 @@ class _ChatInputBarState extends State<ChatInputBar>
 
   // Mobile uses flutter_sound/Opus; all native desktops use record/AAC.
   FlutterSoundRecorder? _recorder;
+
+  /// The category this composer's capture put on the shared audio session.
+  ///
+  /// Non-null only while a capture owns it, so releasing is idempotent even
+  /// when a stop, a cancel and dispose all run for one recording.
+  VoiceRecordingAudioSession? _captureSession;
+
+  /// The cause of the last preparation that could not get the microphone.
+  ///
+  /// The panel opening prepares once and every press waits on that same
+  /// preparation, so without this a single failure would report itself again on
+  /// each press. Opening the panel again clears it and retries.
+  Object? _recorderPreparationFailure;
   desktop_record.AudioRecorder? _desktopRecorder;
   Future<void>? _recorderPreparation;
   Future<void>? _desktopRecorderPreparation;
@@ -806,7 +862,6 @@ class _ChatInputBarState extends State<ChatInputBar>
       if (_focus.hasFocus && _panel != _Panel.none) {
         if (_panel == _Panel.voice) _cancelVoiceRecording();
         _panel = _Panel.none;
-        _formatRange = null;
         needsRebuild = true;
         panelChanged = true;
       }
@@ -905,6 +960,16 @@ class _ChatInputBarState extends State<ChatInputBar>
     unawaited(saver(_desktopComposerHeightKey, height));
   }
 
+  /// The touch field grows and shrinks with its text. Report it once the
+  /// frame is laid out so the transcript can follow the resized viewport;
+  /// the desktop editor's height only changes by drag, reported above.
+  void _onInputFieldResized({required bool desktop}) {
+    if (desktop || widget.onInputHeightChanged == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onInputHeightChanged?.call();
+    });
+  }
+
   void _handleBotPlatformUpdate(Map<String, dynamic> update) {
     try {
       final query = BotGuestQuery.fromUpdate(update);
@@ -927,13 +992,6 @@ class _ChatInputBarState extends State<ChatInputBar>
 
   DateTime? _lastTyping;
   void _onTextChanged() {
-    // A selection or entity notification leaves the draft intact and keeps the
-    // captured range valid; only a real text change advances the revision.
-    if (_controller.text != _lastComposerText) {
-      _lastComposerText = _controller.text;
-      _composerTextRevision++;
-      _dropStaleFormatRange();
-    }
     if (_syncingControllerFromVm) return;
     final applyingAiReplyDraft = _applyingAiReplyDraft;
     if (!applyingAiReplyDraft) {
@@ -1414,11 +1472,6 @@ class _ChatInputBarState extends State<ChatInputBar>
         );
       }
     }
-    if (_controller.text != _lastComposerText) {
-      _lastComposerText = _controller.text;
-      _composerTextRevision++;
-    }
-    _dropStaleFormatRange();
     _hasText = _controller.text.trim().isNotEmpty;
     _aiDraftEligible = isTelegramAiDraftEligible(_controller.text);
     if (_hasText) _quickReplyContextVisible = false;
@@ -1522,15 +1575,6 @@ class _ChatInputBarState extends State<ChatInputBar>
         _canUseQuickReplies) {
       _adoptQuickReplyCache(rebuild: false);
       unawaited(_loadQuickReplies(userInitiated: false));
-    }
-    if (!oldWidget.simpleMode && widget.simpleMode && _panel == _Panel.format) {
-      // Simple mode has no format button to close the docked format panel;
-      // formatting stays in the selection menu.
-      _panel = _Panel.none;
-      _formatRange = null;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) widget.onPanelGeometryChanged?.call();
-      });
     }
   }
 
@@ -1817,9 +1861,6 @@ class _ChatInputBarState extends State<ChatInputBar>
 
   void _setPanel(_Panel next) {
     if (_panel == next && !_quickReplyContextVisible) return;
-    if (_panel == _Panel.format && next != _Panel.format) {
-      _formatRange = null;
-    }
     if (_panel == _Panel.voice && next != _Panel.voice) {
       _cancelVoiceRecording();
     }
@@ -1934,11 +1975,21 @@ class _ChatInputBarState extends State<ChatInputBar>
     }
     _setPanel(opening ? _Panel.voice : _Panel.none);
     if (opening) {
+      // A new opening is a new attempt: whatever refused the microphone last
+      // time can be retried, and its prompt is due once for this opening.
+      _recorderPreparationFailure = null;
       final testingHook = widget.onVoicePanelOpenedForTesting;
       if (testingHook != null) {
         testingHook();
       } else {
-        unawaited(_prepareRecorder());
+        // A preparation nobody waits on must still handle its failure: the
+        // open reports it once, and the flag keeps every press in this opening
+        // from reporting the same cause again.
+        unawaited(
+          _prepareRecorder().catchError((Object error) {
+            _recorderPreparationFailure = error;
+          }),
+        );
       }
       if (_usesNativeDesktopComposer(context)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1956,6 +2007,13 @@ class _ChatInputBarState extends State<ChatInputBar>
       return;
     }
     if (_recorder != null) return;
+    // Reopening the panel is the retry. Until then, one failed preparation
+    // answers every press: the session cannot be claimed either way, and a
+    // second attempt would report the same failure twice for one tap.
+    final failed = _recorderPreparationFailure;
+    if (failed != null) {
+      throw _ReportedCaptureFailure(failed);
+    }
     final pending = _recorderPreparation;
     if (pending != null) return pending;
     late final Future<void> preparation;
@@ -1966,6 +2024,8 @@ class _ChatInputBarState extends State<ChatInputBar>
     });
     _recorderPreparation = preparation;
     await preparation;
+    final failure = _recorderPreparationFailure;
+    if (failure != null) throw _ReportedCaptureFailure(failure);
   }
 
   Future<void> _createMobileRecorder() async {
@@ -1977,16 +2037,19 @@ class _ChatInputBarState extends State<ChatInputBar>
           : await Permission.microphone.status;
       if (permission == null &&
           !status.isGranted &&
-          !status.isPermanentlyDenied) {
+          !status.isPermanentlyDenied &&
+          !status.isRestricted) {
         status = await Permission.microphone.request();
       }
       if (_voiceDisposed || !mounted) return;
       if (!status.isGranted) {
         // The open panel explains the denial inline and offers Settings; it
-        // never opens system Settings without the user's press.
+        // never opens system Settings without the user's press. `restricted`
+        // is a system-wide microphone lock the app cannot prompt through, so
+        // it takes the same settings route as a permanently denied answer.
         if (_showsMobileVoicePanel) {
           _setVoiceInlineError(
-            status.isPermanentlyDenied
+            status.isPermanentlyDenied || status.isRestricted
                 ? _VoiceInlineError.microphoneSettings
                 : _VoiceInlineError.microphoneRequired,
           );
@@ -1994,12 +2057,18 @@ class _ChatInputBarState extends State<ChatInputBar>
           showToast(
             context,
             AppStrings.t(
-              status.isPermanentlyDenied
+              status.isPermanentlyDenied || status.isRestricted
                   ? AppStringKeys.composerMicrophonePermissionSettings
                   : AppStringKeys.composerMicrophonePermissionRequired,
             ),
           );
         }
+        widget.onRecordingIssueForTesting?.call('permission', status);
+        // Any refusal answers this opening. A `request()` on an already-refused
+        // permission never shows a sheet, so pressing again would only repeat
+        // the same notice; reopening the panel or returning from Settings is
+        // the retry.
+        _recorderPreparationFailure ??= _ReportedCaptureFailure(status.name);
         return;
       }
       recorder =
@@ -2012,16 +2081,61 @@ class _ChatInputBarState extends State<ChatInputBar>
         return;
       }
       setState(() => _recorder = recorder);
-    } catch (_) {
+    } catch (error) {
+      await _releaseCaptureSession();
       try {
         await recorder?.closeRecorder();
       } catch (_) {}
-      _showRecordingError();
+      _recorderPreparationFailure = error;
+      _showRecordingError(error: error, stage: 'open');
     }
+  }
+
+  /// Claims the capture audio session for this composer.
+  ///
+  /// Failures propagate: a session that cannot be claimed is exactly the state
+  /// that used to end in an unexplained "could not record" toast, so the caller
+  /// reports it instead of opening a recorder that captures nothing. The mobile
+  /// recorder and this session share one platform decision, so a composer
+  /// already using the desktop recorder never touches the session.
+  Future<void> _prepareCaptureSession() async {
+    if (_captureSession != null) return;
+    if (_voiceUsesDesktopRecorder) return;
+    final session =
+        widget.voiceRecordingSession ??
+        (composerUsesMobileVoiceSession(Theme.of(context).platform)
+            ? const SharedVoiceRecordingAudioSession()
+            : null);
+    if (session == null) return;
+    await session.prepareForCapture();
+    _captureSession = session;
+  }
+
+  /// Hands the shared session back to playback, once per capture.
+  Future<void> _releaseCaptureSession() async {
+    final session = _captureSession;
+    if (session == null) return;
+    _captureSession = null;
+    try {
+      await session.releaseAfterCapture();
+    } catch (_) {}
+  }
+
+  Future<void> _openMicrophoneSettings() async {
+    final open = widget.openAppSettingsForTesting ?? openAppSettings;
+    try {
+      await open();
+    } catch (_) {}
   }
 
   Future<void> _prepareDesktopRecorder() async {
     if (_desktopRecorder != null) return;
+    // The panel opening prepares once and every press waits on that same
+    // preparation, so a refusal must answer the whole opening.
+    final failed = _recorderPreparationFailure;
+    if (failed != null) {
+      throw _ReportedCaptureFailure(failed);
+    }
     final pending = _desktopRecorderPreparation;
     if (pending != null) {
       await pending;
@@ -2044,18 +2158,27 @@ class _ChatInputBarState extends State<ChatInputBar>
     bool allowed;
     try {
       allowed = await recorder.hasPermission();
-    } catch (_) {
+    } catch (error) {
+      // A platform that cannot answer the permission query is not the same
+      // failure as a denied microphone; keep the cause instead of reporting a
+      // generic capture error.
       await recorder.dispose();
-      _showRecordingError();
+      _showRecordingError(error: error, stage: 'permission');
       return;
     }
     if (!allowed) {
       await recorder.dispose();
       if (!mounted) return;
-      showToast(
-        context,
-        AppStrings.t(AppStringKeys.composerMicrophonePermissionRequired),
+      // `record` only shows the macOS prompt while the grant is undetermined.
+      // Once refused, nothing in the app can ask again, so the settings page is
+      // the user's only route - and the same refusal must not be re-reported on
+      // every later press in this opening.
+      _recorderPreparationFailure = const DesktopMicrophoneRefused();
+      _showRecordingError(
+        error: const DesktopMicrophoneRefused(),
+        stage: 'permission',
       );
+      unawaited(_openMicrophoneSettings());
       return;
     }
     if (_voiceDisposed || !mounted) {
@@ -2101,8 +2224,17 @@ class _ChatInputBarState extends State<ChatInputBar>
               shouldStart: () => _canStartHeldRecording,
               start: _startRec,
             )
-            .catchError((Object _) {
-              _showRecordingError();
+            .catchError((Object error) {
+              // A preparation that failed while the panel opened was reported
+              // then; every press in the same opening would otherwise repeat it.
+              if (error is _ReportedCaptureFailure) {
+                // The press cleared the inline row; a permission refusal in
+                // this opening still has to stay visible, so re-arm it from
+                // the remembered failure instead of leaving "hold to talk".
+                _rearmReportedCaptureFailure(error.cause);
+                return;
+              }
+              _showRecordingError(error: error, stage: 'begin');
             })
             .whenComplete(() {
               if (identical(_voiceStart, start)) _voiceStart = null;
@@ -2113,13 +2245,21 @@ class _ChatInputBarState extends State<ChatInputBar>
     return start;
   }
 
-  void _showRecordingError() {
+  void _showRecordingError({Object? error, String? stage, String? codec}) {
+    widget.onRecordingIssueForTesting?.call(stage ?? 'unknown', error);
     if (mounted && !_voiceDisposed && _panel == _Panel.voice) {
       if (!_voiceUsesDesktopRecorder) {
         _setVoiceInlineError(_VoiceInlineError.failed);
         return;
       }
       showToast(context, AppStrings.t(AppStringKeys.composerRecordingFailed));
+    }
+    if (error != null) {
+      DiagnosticBreadcrumbs.voiceRecordingFailed(
+        stage: stage ?? 'unknown',
+        error: error,
+        codec: codec,
+      );
     }
   }
 
@@ -2146,6 +2286,32 @@ class _ChatInputBarState extends State<ChatInputBar>
     setState(() => _voiceInlineError = _VoiceInlineError.none);
   }
 
+  /// Re-shows the inline row for a failure that was already reported while the
+  /// panel opened, after a press cleared the row. `PermissionStatus` names map
+  /// to their settings/required variants; anything else is the generic failure.
+  void _rearmReportedCaptureFailure(Object cause) {
+    if (!mounted || _voiceDisposed || !_showsMobileVoicePanel) return;
+    // The stored failure may be a bare status name or the wrapper
+    // `_ReportedCaptureFailure` re-thrown by `_prepareRecorder`.
+    var detail = cause;
+    while (detail is _ReportedCaptureFailure) {
+      detail = detail.cause;
+    }
+    final name = detail is PermissionStatus
+        ? detail.name
+        : detail is String
+        ? detail
+        : null;
+    setState(() {
+      _voiceInlineError = switch (name) {
+        'permanentlyDenied' ||
+        'restricted' => _VoiceInlineError.microphoneSettings,
+        'denied' || 'notDetermined' => _VoiceInlineError.microphoneRequired,
+        _ => _VoiceInlineError.failed,
+      };
+    });
+  }
+
   Future<void> _startRec() async {
     if (_voiceUsesDesktopRecorder) {
       await _startDesktopRec();
@@ -2153,6 +2319,12 @@ class _ChatInputBarState extends State<ChatInputBar>
     }
     final r = _recorder;
     if (r == null || _recording) return;
+    // The shared session belongs to whatever audio would normally play, and a
+    // playback category admits no input: the recorder would open on top of it
+    // with no microphone route. Claim the capture category for exactly this
+    // recording - the recorder itself stays open across recordings.
+    await _prepareCaptureSession();
+    if (_voiceDisposed || !mounted) return;
     final dir = await getTemporaryDirectory();
     // Apple's AAC encoder rejects anything below 32 kbps at 48 kHz, and
     // AVAudioRecorder then records nothing without reporting an error, so
@@ -2165,6 +2337,11 @@ class _ChatInputBarState extends State<ChatInputBar>
       (Codec.aacADTS, 'aac', 32000),
     ];
     var started = false;
+    // The recorder's own message never says which container failed, and every
+    // attempt is discarded on the way to the next one; keep the first cause so
+    // the failure the user sees is diagnosable.
+    Object? firstFailure;
+    String? firstFailureCodec;
     for (final (codec, extension, bitRate) in candidates) {
       if (!_canStartHeldRecording) return;
       try {
@@ -2181,7 +2358,9 @@ class _ChatInputBarState extends State<ChatInputBar>
         );
         started = true;
         break;
-      } catch (_) {
+      } catch (error) {
+        firstFailure ??= error;
+        firstFailureCodec ??= codec.name;
         // Some devices claim Opus support but fail when opening the encoder.
         // Close that attempt before trying the next supported container.
         try {
@@ -2193,7 +2372,14 @@ class _ChatInputBarState extends State<ChatInputBar>
       }
     }
     if (!started) {
-      _showRecordingError();
+      _showRecordingError(
+        error: firstFailure,
+        stage: 'start',
+        codec: firstFailureCodec,
+      );
+      // No container opened: this recorder holds nothing, and the capture
+      // session must go back to playback rather than stay on `playAndRecord`.
+      await _releaseCaptureSession();
       return;
     }
     if (_voiceDisposed || !mounted) return;
@@ -2250,13 +2436,13 @@ class _ChatInputBarState extends State<ChatInputBar>
         ),
         path: path,
       );
-    } catch (_) {
+    } catch (error) {
       try {
         await recorder.cancel();
       } catch (_) {}
       await _deleteTempFile(path);
       _recPath = null;
-      _showRecordingError();
+      _showRecordingError(error: error, stage: 'start');
       return;
     }
     if (_voiceDisposed || !mounted) return;
@@ -2305,6 +2491,18 @@ class _ChatInputBarState extends State<ChatInputBar>
     // for that exact start, then finalize it once; never start another clip
     // or send twice while the previous stop is still asynchronous.
     await _voiceStart;
+    // The capture session is released on every way out of this method. It was
+    // claimed for exactly one recording; leaving it on `playAndRecord` would
+    // hand the next track a category that changes how it plays, and holding it
+    // through a failed start would keep other apps from taking audio back.
+    try {
+      await _finishMobileVoiceCapture();
+    } finally {
+      await _releaseCaptureSession();
+    }
+  }
+
+  Future<void> _finishMobileVoiceCapture() async {
     if (_voiceDisposed || !_recording) return;
     final target = vm;
     final duration = _elapsed.round();
@@ -2338,6 +2536,11 @@ class _ChatInputBarState extends State<ChatInputBar>
         }
       } catch (_) {}
     }
+    // Capture is over the moment the recorder stops. Hand the session back
+    // before the preview (which plays the clip through its own player) and
+    // before any upload, so nothing keeps `playAndRecord` while the user is
+    // trimming or while the file is in flight.
+    await _releaseCaptureSession();
     final url = await _waitForRecordingFile(recordedPath);
     _recPath = null;
     final cancelled =
@@ -2586,6 +2789,11 @@ class _ChatInputBarState extends State<ChatInputBar>
         state == AppLifecycleState.hidden) {
       unawaited(_voiceDraft?.pause());
     }
+    // Returning from the system settings page is the other way to retry a
+    // microphone the last attempt could not get.
+    if (state == AppLifecycleState.resumed) {
+      _recorderPreparationFailure = null;
+    }
     // A held gesture can lose its release when the app loses focus. A locked
     // mobile recording is intentional and must not be discarded by a system
     // permission sheet, notification, or brief app switch.
@@ -2611,6 +2819,7 @@ class _ChatInputBarState extends State<ChatInputBar>
     } catch (_) {}
     final path = _recPath;
     if (path != null) await _deleteTempFile(path);
+    await _releaseCaptureSession();
     _discardDesktopVoiceDraft();
   }
 
@@ -3492,9 +3701,11 @@ class _ChatInputBarState extends State<ChatInputBar>
       );
       return;
     }
+    final (initialText, initialEntities) = _controller.toFormatted();
     final result = await showRichTextComposerSheet(
       context,
-      initialText: _controller.text,
+      initialText: initialText,
+      initialEntities: initialEntities,
       title: AppStringKeys.composerRichTextMessageTitle,
       submitText: AppStringKeys.composerSend,
     );
@@ -3653,138 +3864,6 @@ class _ChatInputBarState extends State<ChatInputBar>
     return 'https://$trimmed';
   }
 
-  /// Opens or closes the docked format panel from the composer's icon strip.
-  ///
-  /// The selection has to be captured before [_toggle] unfocuses the field:
-  /// a focus loss can collapse it, and both the selected-state query and
-  /// `toggleFormat` read the live selection.
-  void _toggleFormatPanel() {
-    if (_panel == _Panel.format) {
-      _formatRange = null;
-      _toggle(_Panel.format);
-      return;
-    }
-    final selection = _controller.selection;
-    final range = composerFormatRangeFor(selection, _controller.text.length);
-    _formatRange = range == null
-        ? null
-        : _captureComposerFormat(range.$1, range.$2);
-    _toggle(_Panel.format);
-    final captured = _formatRange;
-    if (captured != null) {
-      _controller.selection = TextSelection(
-        baseOffset: captured.start,
-        extentOffset: captured.end,
-      );
-    }
-    // The platform can collapse the field's selection once the keyboard
-    // connection closes, which happens right after this unfocus. Restore the
-    // captured range so the cells keep reporting the selection they format.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _panel != _Panel.format) return;
-      final range = _formatRange;
-      if (range == null || _formatRangeIsStale) return;
-      final selection = _controller.selection;
-      if (selection.start == range.start && selection.end == range.end) return;
-      _controller.selection = TextSelection(
-        baseOffset: range.start,
-        extentOffset: range.end,
-      );
-    });
-  }
-
-  /// The account whose draft this composer edits.
-  ///
-  /// A draft replaced from the view model is re-checked against this owner, so
-  /// a range captured before an account switch cannot format the replacement
-  /// account's text.
-  int get _composerOwnerClientId => TdClient.shared.activeClientId;
-
-  _ComposerFormatCapture _captureComposerFormat(int start, int end) {
-    final text = _controller.text;
-    return (
-      start: start,
-      end: end,
-      textLength: text.length,
-      text: text,
-      textRevision: _composerTextRevision,
-      ownerClientId: _composerOwnerClientId,
-    );
-  }
-
-  bool get _formatRangeIsStale {
-    final range = _formatRange;
-    if (range == null) return true;
-    return composerFormatRangeIsStale(
-      capturedStart: range.start,
-      capturedEnd: range.end,
-      capturedTextLength: range.textLength,
-      currentTextLength: _controller.text.length,
-      capturedText: range.text,
-      currentText: _controller.text,
-      capturedTextRevision: range.textRevision,
-      currentTextRevision: _composerTextRevision,
-      capturedOwnerClientId: range.ownerClientId,
-      currentOwnerClientId: _composerOwnerClientId,
-    );
-  }
-
-  /// Drops a captured range the field's text no longer matches.
-  ///
-  /// The field can be replaced from the view model while it is unfocused (a
-  /// draft swap, or another account's draft), which moves the text under a
-  /// range the panel or its pending link dialog still addresses.
-  void _dropStaleFormatRange() {
-    if (_panel != _Panel.format || _formatRange == null) return;
-    if (!_formatRangeIsStale) return;
-    _formatRange = null;
-    if (mounted) setState(() {});
-  }
-
-  bool _composerFormatIsSelected(_ComposerFormatAction action) {
-    if (_formatRangeIsStale) return false;
-    return _controller.selectionHasFormat(
-      action == _ComposerFormatAction.link
-          ? 'textEntityTypeTextUrl'
-          : action.entityType,
-    );
-  }
-
-  /// Applies one format cell over the captured range and keeps the panel open
-  /// so several formats can be stacked on the same selection.
-  void _applyComposerFormat(_ComposerFormatAction action) {
-    final range = _formatRange;
-    if (range == null || _formatRangeIsStale) return;
-    _controller.selection = TextSelection(
-      baseOffset: range.start,
-      extentOffset: range.end,
-    );
-    if (action == _ComposerFormatAction.link) {
-      unawaited(_promptComposerFormatLink(range));
-      return;
-    }
-    _controller.toggleFormat(action.entityType);
-    setState(() {});
-  }
-
-  Future<void> _promptComposerFormatLink(_ComposerFormatCapture range) async {
-    final url = await showGeneralDialog<String>(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: AppStringKeys.countryPickerCancel.l10n(context),
-      barrierColor: Colors.black.withValues(alpha: 0.36),
-      transitionDuration: const Duration(milliseconds: 160),
-      pageBuilder: (dialogContext, _, _) => const _ComposerLinkDialog(),
-    );
-    if (!mounted || url == null || url.trim().isEmpty) return;
-    if (_formatRange != range || _formatRangeIsStale) return;
-    _controller.applyEntityFormat(range.start, range.end, {
-      '@type': 'textEntityTypeTextUrl',
-      'url': _normalizeComposerUrl(url),
-    });
-    setState(() {});
-  }
-
   void _restoreKeyboardFocus() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -3900,10 +3979,6 @@ class _ChatInputBarState extends State<ChatInputBar>
                     !desktopComposer &&
                     _panel == _Panel.function)
                   simpleComposer ? _simpleMorePanel() : _functionPanel(),
-                if (editingMessage == null &&
-                    !desktopComposer &&
-                    _panel == _Panel.format)
-                  _formatPanel(),
                 if (editingMessage == null &&
                     !desktopComposer &&
                     (_panel == _Panel.emoji || _panel == _Panel.sticker))
@@ -6103,158 +6178,181 @@ class _ChatInputBarState extends State<ChatInputBar>
                                         ),
                                   },
                                   child: ContentSizeScope(
-                                    child: ConstrainedBox(
-                                      constraints: desktop
-                                          ? const BoxConstraints()
-                                          : BoxConstraints(
-                                              maxHeight:
-                                                  _touchTextFieldMaxHeight(),
-                                            ),
-                                      child: TextField(
-                                        controller: _controller,
-                                        focusNode: _focus,
-                                        // The caption is fixed while its
-                                        // voice message is on the way.
-                                        readOnly: sendingVoiceDraft,
-                                        onTap: _handleEmptyInputTap,
-                                        // Submit from editing completion without
-                                        // onSubmitted: Flutter restarts the input
-                                        // connection after a completion action
-                                        // whenever onSubmitted is present, even
-                                        // when onEditingComplete retains focus.
-                                        onEditingComplete: () {
-                                          _controller.clearComposing();
-                                          if (!desktop && widget.enterToSend) {
-                                            unawaited(_sendCurrentText());
-                                          }
-                                        },
-                                        minLines: desktop ? null : 1,
-                                        maxLines: null,
-                                        expands: desktop,
-                                        keyboardType: TextInputType.multiline,
-                                        textInputAction: desktop
-                                            ? TextInputAction.newline
-                                            : widget.enterToSend
-                                            ? TextInputAction.send
-                                            : TextInputAction.newline,
-                                        inputFormatters:
-                                            widget.enterToSend &&
-                                                Theme.of(context).platform ==
-                                                    TargetPlatform.android
-                                            ? [
-                                                _ComposerEnterToSendFormatter(
-                                                  onSend: _scheduleKeyboardSend,
+                                    child: NotificationListener<SizeChangedLayoutNotification>(
+                                      onNotification: (_) {
+                                        _onInputFieldResized(desktop: desktop);
+                                        return true;
+                                      },
+                                      child: SizeChangedLayoutNotifier(
+                                        child: ConstrainedBox(
+                                          constraints: desktop
+                                              ? const BoxConstraints()
+                                              : BoxConstraints(
+                                                  maxHeight:
+                                                      _touchTextFieldMaxHeight(),
                                                 ),
-                                              ]
-                                            : null,
-                                        style: TextStyle(
-                                          fontSize: AppTextSize.messageBody(
-                                            Theme.of(context).platform,
-                                          ),
-                                          color: c.textPrimary,
-                                        ),
-                                        contentInsertionConfiguration: editing
-                                            ? null
-                                            : ContentInsertionConfiguration(
-                                                allowedMimeTypes:
-                                                    _imageMimeTypes,
-                                                onContentInserted:
-                                                    _handleInsertedContent,
+                                          child: TextField(
+                                            controller: _controller,
+                                            focusNode: _focus,
+                                            // The caption is fixed while its
+                                            // voice message is on the way.
+                                            readOnly: sendingVoiceDraft,
+                                            onTap: _handleEmptyInputTap,
+                                            // Submit from editing completion without
+                                            // onSubmitted: Flutter restarts the input
+                                            // connection after a completion action
+                                            // whenever onSubmitted is present, even
+                                            // when onEditingComplete retains focus.
+                                            onEditingComplete: () {
+                                              _controller.clearComposing();
+                                              if (!desktop &&
+                                                  widget.enterToSend) {
+                                                unawaited(_sendCurrentText());
+                                              }
+                                            },
+                                            minLines: desktop ? null : 1,
+                                            maxLines: null,
+                                            expands: desktop,
+                                            keyboardType:
+                                                TextInputType.multiline,
+                                            textInputAction: desktop
+                                                ? TextInputAction.newline
+                                                : widget.enterToSend
+                                                ? TextInputAction.send
+                                                : TextInputAction.newline,
+                                            inputFormatters:
+                                                widget.enterToSend &&
+                                                    Theme.of(
+                                                          context,
+                                                        ).platform ==
+                                                        TargetPlatform.android
+                                                ? [
+                                                    _ComposerEnterToSendFormatter(
+                                                      onSend:
+                                                          _scheduleKeyboardSend,
+                                                    ),
+                                                  ]
+                                                : null,
+                                            style: TextStyle(
+                                              fontSize: AppTextSize.messageBody(
+                                                Theme.of(context).platform,
                                               ),
-                                        contextMenuBuilder:
-                                            (
-                                              BuildContext context,
-                                              EditableTextState
-                                              editableTextState,
-                                            ) {
-                                              ContextMenuButtonItem?
-                                              originalPaste;
-                                              final items =
-                                                  <ContextMenuButtonItem>[];
-                                              for (final item
-                                                  in editableTextState
-                                                      .contextMenuButtonItems) {
-                                                if (item.type ==
-                                                    ContextMenuButtonType
-                                                        .paste) {
-                                                  originalPaste = item;
-                                                } else {
-                                                  items.add(item);
-                                                }
-                                              }
-                                              final paste = ContextMenuButtonItem(
-                                                type:
-                                                    ContextMenuButtonType.paste,
-                                                label:
-                                                    originalPaste?.label ??
-                                                    AppStringKeys
-                                                        .accountBackupLoadSessionPaste
-                                                        .l10n(context),
-                                                onPressed: () => unawaited(
-                                                  _handlePaste(originalPaste),
-                                                ),
-                                              );
-                                              final copyIndex = items
-                                                  .indexWhere(
-                                                    (item) =>
-                                                        item.type ==
-                                                        ContextMenuButtonType
-                                                            .copy,
-                                                  );
-                                              final pasteIndex = copyIndex < 0
-                                                  ? 0
-                                                  : copyIndex + 1;
-                                              items.insert(pasteIndex, paste);
-                                              final selection =
-                                                  _controller.selection;
-                                              if (selection.isValid &&
-                                                  !selection.isCollapsed) {
-                                                items.insert(
-                                                  pasteIndex + 1,
-                                                  ContextMenuButtonItem(
-                                                    label: AppStringKeys
-                                                        .composerFormat
-                                                        .l10n(context),
-                                                    onPressed: () => unawaited(
-                                                      _showComposerFormatMenu(
-                                                        editableTextState,
-                                                      ),
-                                                    ),
+                                              color: c.textPrimary,
+                                            ),
+                                            contentInsertionConfiguration:
+                                                editing
+                                                ? null
+                                                : ContentInsertionConfiguration(
+                                                    allowedMimeTypes:
+                                                        _imageMimeTypes,
+                                                    onContentInserted:
+                                                        _handleInsertedContent,
                                                   ),
-                                                );
-                                              }
-                                              return MediaQuery(
-                                                data: MediaQuery.of(context)
-                                                    .copyWith(
-                                                      textScaler:
-                                                          ContentSizeScope.of(
-                                                            context,
-                                                          ).systemTextScaler,
-                                                    ),
-                                                child:
-                                                    AppTextSelectionToolbar.fromButtonItems(
+                                            contextMenuBuilder:
+                                                (
+                                                  BuildContext context,
+                                                  EditableTextState
+                                                  editableTextState,
+                                                ) {
+                                                  ContextMenuButtonItem?
+                                                  originalPaste;
+                                                  final items =
+                                                      <ContextMenuButtonItem>[];
+                                                  for (final item
+                                                      in editableTextState
+                                                          .contextMenuButtonItems) {
+                                                    if (item.type ==
+                                                        ContextMenuButtonType
+                                                            .paste) {
+                                                      originalPaste = item;
+                                                    } else {
+                                                      items.add(item);
+                                                    }
+                                                  }
+                                                  final paste =
+                                                      ContextMenuButtonItem(
+                                                        type:
+                                                            ContextMenuButtonType
+                                                                .paste,
+                                                        label:
+                                                            originalPaste
+                                                                ?.label ??
+                                                            AppStringKeys
+                                                                .accountBackupLoadSessionPaste
+                                                                .l10n(context),
+                                                        onPressed: () =>
+                                                            unawaited(
+                                                              _handlePaste(
+                                                                originalPaste,
+                                                              ),
+                                                            ),
+                                                      );
+                                                  final copyIndex = items
+                                                      .indexWhere(
+                                                        (item) =>
+                                                            item.type ==
+                                                            ContextMenuButtonType
+                                                                .copy,
+                                                      );
+                                                  final pasteIndex =
+                                                      copyIndex < 0
+                                                      ? 0
+                                                      : copyIndex + 1;
+                                                  items.insert(
+                                                    pasteIndex,
+                                                    paste,
+                                                  );
+                                                  final selection =
+                                                      _controller.selection;
+                                                  if (selection.isValid &&
+                                                      !selection.isCollapsed) {
+                                                    items.insert(
+                                                      pasteIndex + 1,
+                                                      ContextMenuButtonItem(
+                                                        label: AppStringKeys
+                                                            .composerFormat
+                                                            .l10n(context),
+                                                        onPressed: () => unawaited(
+                                                          _showComposerFormatMenu(
+                                                            editableTextState,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }
+                                                  return MediaQuery(
+                                                    data: MediaQuery.of(context)
+                                                        .copyWith(
+                                                          textScaler:
+                                                              ContentSizeScope.of(
+                                                                context,
+                                                              ).systemTextScaler,
+                                                        ),
+                                                    child: AppTextSelectionToolbar.fromButtonItems(
                                                       context: context,
                                                       anchors: editableTextState
                                                           .contextMenuAnchors,
                                                       items: items,
                                                     ),
-                                              );
-                                            },
-                                        decoration: InputDecoration(
-                                          hintText:
-                                              (voiceDraft != null
-                                                      ? AppStringKeys
-                                                            .composerVoiceCaptionPlaceholder
-                                                      : AppStringKeys
-                                                            .chatMessageInputPlaceholder)
-                                                  .l10n(context),
-                                          border: InputBorder.none,
-                                          isCollapsed: true,
-                                          contentPadding: desktop && hasText
-                                              ? const EdgeInsets.only(
-                                                  bottom: 42,
-                                                )
-                                              : EdgeInsets.zero,
+                                                  );
+                                                },
+                                            decoration: InputDecoration(
+                                              hintText:
+                                                  (voiceDraft != null
+                                                          ? AppStringKeys
+                                                                .composerVoiceCaptionPlaceholder
+                                                          : AppStringKeys
+                                                                .chatMessageInputPlaceholder)
+                                                      .l10n(context),
+                                              border: InputBorder.none,
+                                              isCollapsed: true,
+                                              contentPadding: desktop && hasText
+                                                  ? const EdgeInsets.only(
+                                                      bottom: 42,
+                                                    )
+                                                  : EdgeInsets.zero,
+                                            ),
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -6296,6 +6394,15 @@ class _ChatInputBarState extends State<ChatInputBar>
                             if (!desktop && showAiReply) ...[
                               const SizedBox(width: 4),
                               _aiReplyInputButton(replyTarget),
+                            ],
+                            if (!desktop &&
+                                !simple &&
+                                !editing &&
+                                voiceDraft == null &&
+                                _hasText &&
+                                _pendingClipboardAttachments.isEmpty) ...[
+                              const SizedBox(width: 4),
+                              _richTextConvertButton(),
                             ],
                           ],
                         ),
@@ -6844,6 +6951,32 @@ class _ChatInputBarState extends State<ChatInputBar>
     await _generateAiReply(target, requiredModelCandidateId: candidate.id);
   }
 
+  /// Converts the typed draft, formatting included, into the rich-text
+  /// editor, which now holds the composer's formatting tools.
+  Widget _richTextConvertButton() {
+    return Semantics(
+      button: true,
+      label: AppStringKeys.composerRichText.l10n(context),
+      excludeSemantics: true,
+      child: GestureDetector(
+        key: const ValueKey('composerRichTextConvertButton'),
+        behavior: HitTestBehavior.opaque,
+        onTap: () => unawaited(_openRichTextComposer()),
+        child: SizedBox(
+          width: 32,
+          height: 28,
+          child: Center(
+            child: AppIcon(
+              HeroAppIcons.penToSquare,
+              size: 20,
+              color: context.colors.textSecondary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _aiReplyInputButton(ChatMessage target) {
     final working = _aiReplyWorkingTargetId == target.id;
     return Semantics(
@@ -7374,15 +7507,9 @@ class _ChatInputBarState extends State<ChatInputBar>
             _panel == _Panel.emoji || _panel == _Panel.sticker,
             _toggleMediaPanel,
           ),
-          _iconStripButton(
-            AppStrings.t(AppStringKeys.composerFormat),
-            _panel == _Panel.format,
-            _toggleFormatPanel,
-            _formatButtonGlyph,
-          ),
           _icon(
             _panel != _Panel.none
-                ? HeroAppIcons.xmark
+                ? HeroAppIcons.circleXmark
                 : HeroAppIcons.circlePlus,
             AppStrings.t(
               _panel != _Panel.none
@@ -7431,25 +7558,6 @@ class _ChatInputBarState extends State<ChatInputBar>
             ),
           ),
         ),
-      ),
-    );
-  }
-
-  /// The format button's bold "A", in the platform UI face rather than the
-  /// chat font, at a fixed size like the icon glyphs beside it. The metrics
-  /// mirror Icon's: a 1.0 line split evenly keeps the cap height centred.
-  Widget _formatButtonGlyph(Color color) {
-    return Text(
-      'A',
-      textScaler: TextScaler.noScaling,
-      style: TextStyle(
-        inherit: false,
-        color: color,
-        fontFamily: AppFontChoice.system.fontFamily,
-        fontSize: 20,
-        fontWeight: FontWeight.w700,
-        height: 1,
-        leadingDistribution: TextLeadingDistribution.even,
       ),
     );
   }
@@ -8175,6 +8283,10 @@ class _ChatInputBarState extends State<ChatInputBar>
   }
 
   Future<void> _sendRichTextResult(RichTextComposerResult result) async {
+    if (result.sendsAsFormattedText) {
+      await _sendRichTextFormattedOnly(result, droppedRichBlocks: false);
+      return;
+    }
     var mode = await _richTextSendMode();
     if (!mounted) return;
     if (mode == null && result.hasRichBlocks) {
@@ -8973,186 +9085,6 @@ class _ChatInputBarState extends State<ChatInputBar>
               ),
       ),
     );
-  }
-
-  // MARK: - Text format panel
-
-  static const double _composerFormatPanelHeight = 268;
-
-  /// Docked text-format editor: the nine composer entities as a grid of cells.
-  ///
-  /// Every cell applies to the range captured when the panel opened, so the
-  /// panel keeps working after the field loses focus. Cells dim when that
-  /// range no longer addresses the field's text.
-  Widget _formatPanel() {
-    final c = context.colors;
-    final canApply = !_formatRangeIsStale;
-    final columns = MediaQuery.sizeOf(context).width >= 390 ? 5 : 4;
-    return Container(
-      key: const ValueKey('composerFormatPanel'),
-      width: double.infinity,
-      height: _composerFormatPanelHeight,
-      color: c.inputBarBackground,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-            child: Text(
-              AppStringKeys.composerFormat.l10n(context),
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: c.textSecondary,
-                decoration: TextDecoration.none,
-              ),
-            ),
-          ),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  const spacing = 8.0;
-                  final cellWidth =
-                      (constraints.maxWidth - spacing * (columns - 1)) /
-                      columns;
-                  return Wrap(
-                    spacing: spacing,
-                    runSpacing: 10,
-                    children: [
-                      for (final action in _ComposerFormatAction.values)
-                        SizedBox(
-                          width: cellWidth,
-                          child: _formatPanelCell(
-                            action,
-                            enabled: canApply,
-                            selected:
-                                canApply && _composerFormatIsSelected(action),
-                          ),
-                        ),
-                    ],
-                  );
-                },
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _formatPanelCell(
-    _ComposerFormatAction action, {
-    required bool enabled,
-    required bool selected,
-  }) {
-    final c = context.colors;
-    // Every ink is a theme token, so custom themes recolour the panel too.
-    // Disabled cells stay readable at full textSecondary, still clearly
-    // lighter than the textPrimary glyph of an enabled cell.
-    final foreground = !enabled
-        ? c.textSecondary
-        : selected
-        ? AppTheme.brand
-        : c.textPrimary;
-    return Semantics(
-      button: true,
-      enabled: enabled,
-      selected: selected,
-      label: action.labelKey.l10n(context),
-      excludeSemantics: true,
-      child: GestureDetector(
-        key: ValueKey('composerFormatAction-${action.name}'),
-        behavior: HitTestBehavior.opaque,
-        onTap: enabled ? () => _applyComposerFormat(action) : null,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 46,
-              height: 36,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: selected
-                    ? AppTheme.brand.withValues(alpha: 0.14)
-                    : c.searchFill,
-                borderRadius: BorderRadius.circular(AppRadius.md),
-                border: Border.all(
-                  color: selected
-                      ? AppTheme.brand.withValues(alpha: 0.54)
-                      : c.textTertiary,
-                ),
-              ),
-              child: _formatActionGlyph(action, foreground),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              action.labelKey.l10n(context),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 11,
-                color: c.textSecondary,
-                decoration: TextDecoration.none,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _formatActionGlyph(_ComposerFormatAction action, Color foreground) {
-    return switch (action) {
-      _ComposerFormatAction.quote => AppIcon(
-        HeroAppIcons.quoteLeft,
-        size: 18,
-        color: foreground,
-      ),
-      _ComposerFormatAction.spoiler => AppIcon(
-        HeroAppIcons.eyeSlash,
-        size: 18,
-        color: foreground,
-      ),
-      _ComposerFormatAction.link => AppIcon(
-        HeroAppIcons.link,
-        size: 18,
-        color: foreground,
-      ),
-      _ComposerFormatAction.codeBlock => AppIcon(
-        HeroAppIcons.code,
-        size: 18,
-        color: foreground,
-      ),
-      _ => Text(
-        switch (action) {
-          _ComposerFormatAction.bold =>
-            AppStringKeys.richTextComposerFormatBoldMark.l10n(context),
-          _ComposerFormatAction.italic =>
-            AppStringKeys.richTextComposerFormatItalicMark.l10n(context),
-          _ComposerFormatAction.underline =>
-            AppStringKeys.richTextComposerFormatUnderlineMark.l10n(context),
-          _ComposerFormatAction.strikethrough =>
-            AppStringKeys.richTextComposerFormatStrikethroughMark.l10n(context),
-          _ => '</>',
-        },
-        style: AppTextStyle.caption(foreground).copyWith(
-          fontWeight: action == _ComposerFormatAction.bold
-              ? FontWeight.w600
-              : FontWeight.w500,
-          fontStyle: action == _ComposerFormatAction.italic
-              ? FontStyle.italic
-              : null,
-          decoration: switch (action) {
-            _ComposerFormatAction.underline => TextDecoration.underline,
-            _ComposerFormatAction.strikethrough => TextDecoration.lineThrough,
-            _ => null,
-          },
-        ),
-      ),
-    };
   }
 
   // MARK: - Unified media panel (emoji / stickers / GIF)
@@ -11251,56 +11183,4 @@ class _ComposerLinkDialogState extends State<_ComposerLinkDialog> {
     if (url.isEmpty) return;
     Navigator.of(context).pop(url);
   }
-}
-
-/// Resolves the composer selection the format panel may act on.
-///
-/// Returns `(start, end)` in text offsets with `start < end`, or null when the
-/// selection is collapsed, invalid, or reaches outside the field's text.
-(int, int)? composerFormatRangeFor(TextSelection selection, int textLength) {
-  if (!selection.isValid || selection.isCollapsed) return null;
-  final start = math.min(selection.start, selection.end);
-  final end = math.max(selection.start, selection.end);
-  if (start < 0 || end > textLength || start >= end) return null;
-  return (start, end);
-}
-
-/// What the docked format panel captured when it opened: the selection offsets
-/// inside [text], the field revision that text belonged to, and the account
-/// whose draft the composer was editing.
-typedef _ComposerFormatCapture = ({
-  int start,
-  int end,
-  int textLength,
-  String text,
-  int textRevision,
-  int ownerClientId,
-});
-
-/// Whether a captured format range no longer addresses the field's text.
-///
-/// Any edit that changes the field's length shifts the captured offsets, so
-/// the panel drops the range instead of formatting the wrong characters. A
-/// replacement that keeps the length (the view model replacing the draft while
-/// the field is unfocused) is caught by the text, its revision and the account
-/// owner instead: offsets alone cannot tell two same-length drafts apart.
-bool composerFormatRangeIsStale({
-  required int capturedStart,
-  required int capturedEnd,
-  required int capturedTextLength,
-  required int currentTextLength,
-  required String capturedText,
-  required String currentText,
-  required int capturedTextRevision,
-  required int currentTextRevision,
-  required int capturedOwnerClientId,
-  required int currentOwnerClientId,
-}) {
-  if (capturedStart < 0 || capturedEnd <= capturedStart) return true;
-  if (capturedTextLength != currentTextLength) return true;
-  if (capturedEnd > currentTextLength) return true;
-  if (capturedText != currentText) return true;
-  if (capturedTextRevision != currentTextRevision) return true;
-  if (capturedOwnerClientId != currentOwnerClientId) return true;
-  return false;
 }

@@ -66,7 +66,10 @@
     <string name="accountBackupStorageOnDevice">En este dispositivo</string>
     <string name="accountBackupTitle">Copia de seguridad de cuentas</string>
     <string name="accountBackupUnavailable">La copia de seguridad de cuentas no está disponible en este dispositivo o distribución.</string>
-    <string name="accountBackupUserId">ID de usuario: {value1}</string>
+        <string name="accountPickerTitle">Elige una cuenta</string>
+    <string name="accountPickerMessage">Este chat no está en la cuenta actual. Elige en qué cuenta abrirlo.</string>
+    <string name="accountPickerHasChat">Tiene este chat</string>
+<string name="accountBackupUserId">ID de usuario: {value1}</string>
     <string name="accountSecurityANewCodeWasSent">Se envió un nuevo código.</string>
     <string name="accountSecurityAccountAndContactsWillMove">Tu cuenta de Telegram y tus contactos se trasladarán al nuevo número.</string>
     <string name="accountSecurityAccountInactivity">Inactividad de la cuenta</string>
@@ -529,6 +532,7 @@
     <string name="appearanceShowChatListSearch">Buscar en chats</string>
     <string name="appearanceShowEditAndReadMarks">Mostrar marcas de edición y lectura</string>
     <string name="appearanceShowFolderBadges">Insignias de carpetas</string>
+    <string name="appearanceHideAllChatsFolder">Ocultar la carpeta «Todo»</string>
     <string name="appearanceShowGroupMemberTitles">Mostrar cargos de miembros del grupo</string>
     <string name="appearanceShowMessageBubbles">Mostrar burbujas de mensajes</string>
     <string name="appearanceShowMessageBubblesDescription">Si se desactiva, no se usa la imagen de burbuja personalizada y los mensajes vuelven a la burbuja de tu tema. Se conserva el estilo elegido.</string>
@@ -1636,6 +1640,8 @@
     <string name="generalSendMessageWithEnter">Enviar mensajes con Enter</string>
     <string name="generalShowSavedMessagesIdentity">Mostrar «Mensajes guardados» en lugar de mi perfil</string>
     <string name="generalStorage">Almacenamiento</string>
+    <string name="generalSystemPhotoPicker">Usar el selector de fotos del sistema</string>
+    <string name="generalSystemPhotoPickerHint">Elige fotos y vídeos sin dar a Mithka acceso a tu fototeca. Las opciones Original y Live Photo no están disponibles.</string>
     <string name="generalTitle">General</string>
     <string name="gesturesChatActions">Acciones del chat</string>
     <string name="gesturesChatActionsModeDescription">1 dedo: acciones del chat · 2 dedos: carpetas · 3 dedos: cuentas</string>
@@ -2076,6 +2082,10 @@
     <string name="linkHandlerTelegramStarsCount">{value1} Estrellas de Telegrama</string>
     <string name="linkHandlerUnsupportedTelegramLink">Aún no se admite abrir este enlace de Telegram</string>
     <string name="linkHandlerWritingStyle">Estilo de escritura</string>
+    <string name="linkLogInToOpen">Inicia sesión para abrir este enlace.</string>
+    <string name="linkNotTelegramLink">Mithka solo puede abrir enlaces de Telegram.</string>
+    <string name="linkOpenTmeInMithka">Abrir enlaces t.me en Mithka</string>
+    <string name="linkOpenTmeInMithkaHint">En los ajustes de Android, añade t.me a los enlaces que abre Mithka. Si tienes Telegram instalado, desactiva antes la apertura de sus enlaces.</string>
     <string name="listSeparator" xml:space="preserve">, </string>
     <string name="locationDetailFetchingLocation">Obteniendo ubicación…</string>
     <string name="locationPickerDragMapToChoose">Arrastra el mapa para elegir una ubicación</string>
@@ -2539,6 +2549,7 @@
     <string name="passkeysRemoved">Llave de acceso eliminada</string>
     <string name="passkeysTitle">Llaves de acceso</string>
     <string name="passkeysUnknownName">Llave de acceso sin nombre</string>
+    <string name="pickerSystemPicker">Sistema</string>
     <string name="pinnedMessagesEmpty">Aún no hay mensajes destacados</string>
     <string name="pinnedMessagesSentBy">Enviado por {value1}</string>
     <string name="pollComposerAddOption">Añadir opción</string>
@@ -2783,6 +2794,7 @@
     <string name="proxyHostOrIp">Host o IP</string>
     <string name="proxyOptional">Opcional</string>
     <string name="proxyPassword">Contraseña</string>
+    <string name="proxyPath">Ruta</string>
     <string name="proxyPort">Puerto</string>
     <string name="proxySecret">Clave secreta</string>
     <string name="proxyServer">Servidor</string>
@@ -3669,7 +3681,10 @@
     <string name="topicChatLoading">Cargando</string>
     <string name="topicChatMarkAllRead">Mark all as read</string>
     <string name="topicChatMarkAllReadFailed">Failed to mark all topics as read</string>
-    <string name="topicChatMemberCount">{value1} personas</string>
+    <plurals name="topicChatMemberCount">
+        <item quantity="one">{count} persona</item>
+        <item quantity="other">{count} personas</item>
+    </plurals>
     <string name="topicChatMostRelevant">Más relevantes</string>
     <string name="topicChatMuteFailed">No se pudo activar No molestar</string>
     <string name="topicChatMuteMessagesToggle">Silenciar mensajes</string>
@@ -3789,6 +3804,7 @@
     <string name="videoPlayerPlaying">Reproduciendo</string>
     <string name="videoPlayerSeekBackwardTenSeconds">Retroceder 10 segundos</string>
     <string name="videoPlayerSeekForwardTenSeconds">Avanzar 10 segundos</string>
+    <string name="videoPlayerHoldPlaybackSpeed">Mantén pulsado para acelerar la reproducción</string>
     <string name="videoPlayerStreamInspector">Inspector de transmisión</string>
     <string name="videoPlayerVideoNumber">Vídeo {value1}</string>
     <string name="videoPlayerVideoZoom">Zoom de vídeo</string>
@@ -3932,4 +3948,15 @@
         <item quantity="one">{count} día</item>
         <item quantity="other">{count} días</item>
     </plurals>
+    <string name="storageDownloadLocation">Ubicación de las descargas</string>
+    <string name="storageDownloadCacheLocation">Caché de descargas</string>
+    <string name="storageDownloadSaveFolder">Carpeta de archivos guardados</string>
+    <string name="storageDownloadShared">Almacenamiento compartido</string>
+    <string name="storageDownloadPrivate">Almacenamiento privado de la aplicación</string>
+    <string name="storageDownloadRestart">Los cambios se aplicarán al volver a iniciar Mithka. Las descargas existentes se trasladarán automáticamente.</string>
+    <string name="storageDownloadSaveHint">Usa Guardar como en Descargas para copiar un archivo aquí. Las copias se conservan después de desinstalar Mithka.</string>
+    <string name="storageDownloadMigrationFailed">No se pudieron mover las descargas. Se sigue usando la ubicación original; Mithka lo volverá a intentar al iniciarse.</string>
+    <string name="storageDownloadLocationFailed">No se pudo acceder a la ubicación de las descargas</string>
+    <string name="storageDownloadFolderNotSelected">Elegir una carpeta</string>
+    <string name="storageDownloadCurrent">Ubicación actual: {value1}</string>
 </resources>

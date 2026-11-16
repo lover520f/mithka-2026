@@ -66,7 +66,8 @@ def evidence():
             for platform in [
                 "windows-x64",
                 "windows-arm64",
-                "macos-universal",
+                "macos-arm64",
+                "macos-x64",
                 "linux-x64",
                 "linux-arm64",
             ]
@@ -122,6 +123,39 @@ class StorePublicationTest(unittest.TestCase):
                 PUBLISHER.verify_build(
                     run, changed, artifacts, SOURCE, CONTROLLER, "1.8.8"
                 )
+        for ohos in ("success", "failure"):
+            changed = jobs + [{"name": "Build HarmonyOS hap", "conclusion": ohos}]
+            self.assertEqual(
+                PUBLISHER.verify_build(
+                    run, changed, artifacts, SOURCE, CONTROLLER, "1.8.8"
+                ),
+                "20261027",
+            )
+        # Only a failed optional HarmonyOS build excuses the artifact check.
+        verify_failed = copy.deepcopy(jobs)
+        verify_failed[9]["steps"] = [
+            {"name": "Verify and list artifacts", "conclusion": "failure"}
+        ]
+        self.assertEqual(
+            PUBLISHER.verify_build(
+                run,
+                verify_failed + [{"name": "Build HarmonyOS hap", "conclusion": "failure"}],
+                artifacts,
+                SOURCE,
+                CONTROLLER,
+                "1.8.8",
+            ),
+            "20261027",
+        )
+        with self.assertRaises(PUBLISHER.Error):
+            PUBLISHER.verify_build(
+                run,
+                verify_failed + [{"name": "Build HarmonyOS hap", "conclusion": "success"}],
+                artifacts,
+                SOURCE,
+                CONTROLLER,
+                "1.8.8",
+            )
 
     def test_wrong_repository_event_controller_and_ambiguous_jobs_are_rejected(self):
         run, jobs, artifacts = evidence()
@@ -280,14 +314,14 @@ class StorePublicationTest(unittest.TestCase):
                 ),
             ):
                 PUBLISHER.publish(PLAN, 9, root, 88)
-                self.assertEqual(len(uploads), 12)
+                self.assertEqual(len(uploads), 13)
                 self.assertFalse(remote["draft"])
                 self.assertEqual(tags.call_count, 3)
                 manifest = json.loads((root / "release-manifest.json").read_text())
                 self.assertEqual(manifest["source_sha"], SOURCE)
                 self.assertEqual(manifest["workflow_run_id"], "9")
                 self.assertEqual(manifest["publication_workflow_run_id"], "88")
-                self.assertEqual(len(manifest["files"]), 11)
+                self.assertEqual(len(manifest["files"]), 12)
                 # A retry with the same provenance and immutable packages is read-only.
                 (root / "release-manifest.json").unlink()
                 mutations.clear()

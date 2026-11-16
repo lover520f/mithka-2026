@@ -50,11 +50,14 @@ import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 
 class MainActivity : FlutterFragmentActivity() {
+    private var webProxyBridge: WebProxyBridge? = null
     private var callMedia: CallMediaPlugin? = null
     private var telegramPasskeys: TelegramPasskeyPlugin? = null
     private var accountBackup: AccountBackupPlugin? = null
+    private var downloadStorage: DownloadStoragePlugin? = null
     private var mithkaPro: MithkaProPlugin? = null
     private var nowPlaying: NowPlayingPlugin? = null
+    private var externalLinks: ExternalLinksPlugin? = null
     private var mediaDropChannel: MethodChannel? = null
     private var shareIntentChannel: MethodChannel? = null
     private var pendingSharePayload: Map<String, Any?>? = null
@@ -70,7 +73,38 @@ class MainActivity : FlutterFragmentActivity() {
         // Let Flutter paint under the status bar and gesture/nav bar.
         WindowCompat.setDecorFitsSystemWindows(window, false)
         super.onCreate(savedInstanceState)
+        requestHighestRefreshRate()
         pendingSharePayload = parseIncomingShareIntent(intent)
+    }
+
+    /**
+     * Some 90/120 Hz phones hold an app at 60 Hz unless its window asks for
+     * more. Prefer the fastest mode at the resolution already in use, so the
+     * request never changes the panel's resolution. The system still lowers
+     * the rate on its own in battery saver.
+     */
+    private fun requestHighestRefreshRate() {
+        try {
+            @Suppress("DEPRECATION")
+            val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                display
+            } else {
+                windowManager.defaultDisplay
+            } ?: return
+            val current = display.mode
+            val fastest = display.supportedModes
+                .filter {
+                    it.physicalWidth == current.physicalWidth &&
+                        it.physicalHeight == current.physicalHeight
+                }
+                .maxByOrNull { it.refreshRate } ?: return
+            if (fastest.refreshRate <= current.refreshRate + 0.5f) return
+            val attributes = window.attributes
+            attributes.preferredDisplayModeId = fastest.modeId
+            window.attributes = attributes
+        } catch (error: Exception) {
+            Log.w("MainActivity", "Could not request a faster display mode", error)
+        }
     }
 
     override fun onStart() {
@@ -135,7 +169,12 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        webProxyBridge = WebProxyBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         registerPlugins(flutterEngine)
+        downloadStorage = DownloadStoragePlugin(
+            this,
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mithka/fullscreen_system_ui")
             .setMethodCallHandler { call, result ->
                 if (call.method == "setFullscreen") {
@@ -161,6 +200,10 @@ class MainActivity : FlutterFragmentActivity() {
         )
         nowPlaying = NowPlayingPlugin(
             applicationContext,
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
+        externalLinks = ExternalLinksPlugin(
+            this,
             flutterEngine.dartExecutor.binaryMessenger,
         )
         val plugin = CallMediaPlugin(
@@ -953,6 +996,18 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun currentLauncherIcon(): String {
         val aliases = launcherAliases()
+        // Choosing any icon explicitly disables the default alias, so one that
+        // is still in its manifest state means no icon was ever chosen. That is
+        // the common case, and without this check it costs one binder call per
+        // alias on the main thread during launch before falling through.
+        val defaultState = packageManager.getComponentEnabledSetting(
+            ComponentName(packageName, aliases.getValue("default")),
+        )
+        if (defaultState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT ||
+            defaultState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+        ) {
+            return "default"
+        }
         for ((key, className) in aliases) {
             val component = ComponentName(packageName, className)
             val state = packageManager.getComponentEnabledSetting(component)
@@ -1320,6 +1375,10 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        downloadStorage?.dispose()
+        downloadStorage = null
+        webProxyBridge?.dispose()
+        webProxyBridge = null
         translators.values.forEach { it.close() }
         translators.clear()
         if (languageIdentifierDelegate.isInitialized()) {
@@ -1333,6 +1392,8 @@ class MainActivity : FlutterFragmentActivity() {
         mithkaPro = null
         nowPlaying?.dispose()
         nowPlaying = null
+        externalLinks?.dispose()
+        externalLinks = null
         callMedia?.dispose()
         callMedia = null
         super.cleanUpFlutterEngine(flutterEngine)

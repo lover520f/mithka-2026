@@ -66,7 +66,10 @@
     <string name="accountBackupStorageOnDevice">此裝置</string>
     <string name="accountBackupTitle">帳號備份</string>
     <string name="accountBackupUnavailable">此裝置或發行版本無法使用帳號備份。</string>
-    <string name="accountBackupUserId">使用者 ID：{value1}</string>
+        <string name="accountPickerTitle">選擇帳號</string>
+    <string name="accountPickerMessage">目前帳號中沒有此聊天。請選擇要在哪個帳號中開啟。</string>
+    <string name="accountPickerHasChat">有此聊天</string>
+<string name="accountBackupUserId">使用者 ID：{value1}</string>
     <string name="accountSecurityANewCodeWasSent">已發送新代碼。</string>
     <string name="accountSecurityAccountAndContactsWillMove">你的 Telegram 帳號和聯絡人將轉移到新號碼。</string>
     <string name="accountSecurityAccountInactivity">帳號不活動</string>
@@ -529,6 +532,7 @@
     <string name="appearanceShowChatListSearch">聊天列表搜尋</string>
     <string name="appearanceShowEditAndReadMarks">顯示編輯與已讀標記</string>
     <string name="appearanceShowFolderBadges">資料夾未讀徽章</string>
+    <string name="appearanceHideAllChatsFolder">隱藏「全部」資料夾</string>
     <string name="appearanceShowGroupMemberTitles">顯示群組成員頭銜</string>
     <string name="appearanceShowMessageBubbles">顯示訊息氣泡</string>
     <string name="appearanceShowMessageBubblesDescription">關閉後將不使用自訂氣泡圖片，訊息改用主題內建的氣泡。已選的樣式會保留。</string>
@@ -1629,6 +1633,8 @@
     <string name="generalSendMessageWithEnter">按 Enter 傳送訊息</string>
     <string name="generalShowSavedMessagesIdentity">顯示「已儲存的訊息」而不是我的個人資料</string>
     <string name="generalStorage">儲存空間</string>
+    <string name="generalSystemPhotoPicker">使用系統圖片選擇器</string>
+    <string name="generalSystemPhotoPickerHint">無需授予相簿存取權限即可選擇照片和影片。不提供原圖和原況照片選項。</string>
     <string name="generalTitle">一般</string>
     <string name="gesturesChatActions">聊天操作</string>
     <string name="gesturesChatActionsModeDescription">單指：聊天操作 · 雙指：切換資料夾 · 三指：切換帳號</string>
@@ -2069,6 +2075,10 @@
     <string name="linkHandlerTelegramStarsCount">{value1} 電報星星</string>
     <string name="linkHandlerUnsupportedTelegramLink">暫不支援開啟此 Telegram 連結</string>
     <string name="linkHandlerWritingStyle">寫作風格</string>
+    <string name="linkLogInToOpen">登入後即可開啟此連結。</string>
+    <string name="linkNotTelegramLink">Mithka 只能開啟 Telegram 連結。</string>
+    <string name="linkOpenTmeInMithka">在 Mithka 中開啟 t.me 連結</string>
+    <string name="linkOpenTmeInMithkaHint">在 Android 設定中將 t.me 新增為由 Mithka 開啟的連結。如果裝了 Telegram，請先關閉它的連結開啟功能。</string>
     <string name="listSeparator">、</string>
     <string name="locationDetailFetchingLocation">正在取得位置…</string>
     <string name="locationPickerDragMapToChoose">拖曳地圖選擇位置</string>
@@ -2529,6 +2539,7 @@
     <string name="passkeysRemoved">通行密鑰已刪除</string>
     <string name="passkeysTitle">通行密鑰</string>
     <string name="passkeysUnknownName">未命名的通行密鑰</string>
+    <string name="pickerSystemPicker">系統相簿</string>
     <string name="pinnedMessagesEmpty">暫無置頂訊息</string>
     <string name="pinnedMessagesSentBy">{value1} 傳送</string>
     <string name="pollComposerAddOption">新增選項</string>
@@ -2773,6 +2784,7 @@
     <string name="proxyHostOrIp">主機或 IP</string>
     <string name="proxyOptional">選填</string>
     <string name="proxyPassword">密碼</string>
+    <string name="proxyPath">路徑</string>
     <string name="proxyPort">連接埠</string>
     <string name="proxySecret">密鑰</string>
     <string name="proxyServer">伺服器</string>
@@ -3658,7 +3670,9 @@
     <string name="topicChatLoading">載入中</string>
     <string name="topicChatMarkAllRead">Mark all as read</string>
     <string name="topicChatMarkAllReadFailed">Failed to mark all topics as read</string>
-    <string name="topicChatMemberCount">{value1} 人</string>
+    <plurals name="topicChatMemberCount">
+        <item quantity="other">{count} 人</item>
+    </plurals>
     <string name="topicChatMostRelevant">最相關</string>
     <string name="topicChatMuteFailed">設定靜音失敗</string>
     <string name="topicChatMuteMessagesToggle">訊息靜音</string>
@@ -3778,6 +3792,7 @@
     <string name="videoPlayerPlaying">正在播放</string>
     <string name="videoPlayerSeekBackwardTenSeconds">倒退 10 秒</string>
     <string name="videoPlayerSeekForwardTenSeconds">快轉 10 秒</string>
+    <string name="videoPlayerHoldPlaybackSpeed">長按加速播放</string>
     <string name="videoPlayerStreamInspector">串流檢查器</string>
     <string name="videoPlayerVideoNumber">影片 {value1}</string>
     <string name="videoPlayerVideoZoom">影片縮放</string>
@@ -3916,4 +3931,15 @@
     <plurals name="giftDurationDays">
         <item quantity="other">{count} 天</item>
     </plurals>
+    <string name="storageDownloadLocation">下載位置</string>
+    <string name="storageDownloadCacheLocation">下載快取</string>
+    <string name="storageDownloadSaveFolder">檔案儲存資料夾</string>
+    <string name="storageDownloadShared">共用儲存空間</string>
+    <string name="storageDownloadPrivate">應用程式私人儲存空間</string>
+    <string name="storageDownloadRestart">變更將於下次啟動 Mithka 時生效，現有下載會自動移轉。</string>
+    <string name="storageDownloadSaveHint">在下載頁面使用「另存新檔」將檔案複製到這裡。解除安裝 Mithka 後，儲存的副本仍會保留。</string>
+    <string name="storageDownloadMigrationFailed">無法移轉下載檔案，仍在使用原位置。Mithka 將於下次啟動時重試。</string>
+    <string name="storageDownloadLocationFailed">無法存取下載位置</string>
+    <string name="storageDownloadFolderNotSelected">選擇資料夾</string>
+    <string name="storageDownloadCurrent">目前位置：{value1}</string>
 </resources>

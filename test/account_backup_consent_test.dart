@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,163 +7,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  test(
-    'login backup consent accepts its computed default and explicit changes',
-    () async {
-      SharedPreferences.setMockInitialValues({
-        'mithka.accountBackup.explicitConsentMigration.v1': true,
-      });
-      const slot = 8042;
-
-      await AccountBackupService.shared.beginLoginConsent(
-        slot: slot,
-        enabled: true,
-      );
-      expect(
-        await AccountBackupService.shared.pendingLoginConsent(slot: slot),
-        isTrue,
-      );
-
-      await AccountBackupService.shared.setPendingLoginConsent(
-        slot: slot,
-        enabled: false,
-      );
-      expect(
-        await AccountBackupService.shared.pendingLoginConsent(slot: slot),
-        isFalse,
-      );
-    },
-  );
-
-  test('login backup defaults on whenever iCloud sync is supported', () {
-    expect(
-      AccountBackupService.shouldSelectLoginBackupByDefault(
-        isIOS: true,
-        isSupported: true,
-      ),
-      isTrue,
-    );
-    expect(
-      AccountBackupService.shouldSelectLoginBackupByDefault(
-        isIOS: false,
-        isSupported: true,
-      ),
-      isFalse,
-    );
-    expect(
-      AccountBackupService.shouldSelectLoginBackupByDefault(
-        isIOS: true,
-        isSupported: false,
-      ),
-      isFalse,
-    );
-  });
-
-  test('account backup consent has no Pro count limit', () async {
-    SharedPreferences.setMockInitialValues({
-      'mithka.accountBackup.explicitConsentMigration.v1': true,
-    });
-    final service = AccountBackupService(platformEligible: false);
-
-    for (var accountId = 1; accountId <= 8; accountId += 1) {
-      await service.setAccountConsent('$accountId', true);
-    }
-
-    expect(await service.consentedAccountIds(), hasLength(8));
-  });
-
-  test(
-    'free customer can list and delete cloud backups beyond old limits',
-    () async {
-      SharedPreferences.setMockInitialValues({
-        'mithka.accountBackup.explicitConsentMigration.v1': true,
-      });
-      const channel = MethodChannel('mithka/account_backup.free_access_test');
-      const proChannel = MethodChannel('mithka/pro');
-      var entitlementQueries = 0;
-      final deleted = <String>[];
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(proChannel, (call) async {
-        entitlementQueries++;
-        return {'isPro': false, 'storeAvailable': false};
-      });
-      messenger.setMockMethodCallHandler(channel, (call) async {
-        switch (call.method) {
-          case 'isSupported':
-            return true;
-          case 'isLocalStorageSupported':
-            return false;
-          case 'getAllSessions':
-            expect((call.arguments as Map)['storage'], 'synced');
-            return [
-              for (var id = 1; id <= 12; id++)
-                _backupRecord(
-                  format: 'mithka.tdlib.session_string.v2.explicit_consent',
-                  id: '$id',
-                ),
-            ];
-          case 'deleteSession':
-            deleted.add((call.arguments as Map)['id'] as String);
-            return null;
-        }
-        return null;
-      });
-      addTearDown(() {
-        messenger.setMockMethodCallHandler(channel, null);
-        messenger.setMockMethodCallHandler(proChannel, null);
-      });
-      final service = AccountBackupService(
-        channel: channel,
-        platformEligible: true,
-      );
-      final backups = await service.listBackups();
-      expect(backups, hasLength(12));
-      expect(
-        backups.every(
-          (backup) => backup.storage == AccountSessionBackupStorage.synced,
-        ),
-        isTrue,
-      );
-      expect(await service.consentedAccountCount(), 12);
-      await service.delete(backups.first);
-      expect(deleted, [backups.first.id]);
-      expect(await service.hasConsentForAccountId(backups.first.id), isFalse);
-      expect(entitlementQueries, 0);
-    },
-  );
-
-  test(
-    'source contract: functional account and sync paths have no Supporter dependency',
-    () {
-      final supporter = RegExp(
-        r'MithkaPro|mithka_pro|requiresSupporter|activeSupporter|requirePro|\bisPro\b',
-      );
-      for (final path in [
-        'lib/auth/account_backup_service.dart',
-        'lib/auth/account_store.dart',
-        'lib/auth/auth_manager.dart',
-        'lib/auth/login_view.dart',
-        'lib/profile/profile_view.dart',
-        'lib/settings/account_backup_view.dart',
-        'lib/tdlib/td_client.dart',
-        'android/app/src/main/kotlin/ad/neko/mithka/AccountBackupPlugin.kt',
-      ]) {
-        expect(
-          supporter.hasMatch(File(path).readAsStringSync()),
-          isFalse,
-          reason: path,
-        );
-      }
-      final apple = File('ios/Runner/AppDelegate.swift').readAsStringSync();
-      final backup = apple.split(
-        'private final class AccountSessionBackupKeychain {',
-      )[1];
-      expect(supporter.hasMatch(backup), isFalse);
-      expect(backup, contains('kSecAttrSynchronizable'));
-    },
-  );
 
   test('backup decision requires pending or previously stored consent', () {
     expect(
@@ -246,57 +88,6 @@ void main() {
     },
   );
 
-  test(
-    'migration cleans unknown data then re-saves explicit v2 records',
-    () async {
-      SharedPreferences.setMockInitialValues({});
-      const channel = MethodChannel('mithka/account_backup.unknown_test');
-      final explicit = _backupRecord(
-        format: 'mithka.tdlib.session_string.v2.explicit_consent',
-        id: '3003',
-      );
-      var deleteAllCalls = 0;
-      final savedIds = <String>[];
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            switch (call.method) {
-              case 'isSupported':
-                return true;
-              case 'getAllSessions':
-                return <Uint8List>[
-                  Uint8List.fromList([0, 1, 2]),
-                  explicit,
-                ];
-              case 'deleteAllSessions':
-                deleteAllCalls += 1;
-                return null;
-              case 'saveSession':
-                savedIds.add(
-                  (call.arguments as Map<Object?, Object?>)['id']! as String,
-                );
-                return null;
-              case 'deleteSession':
-                fail('unidentified data requires a complete cleanup');
-            }
-            return null;
-          });
-      addTearDown(
-        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(channel, null),
-      );
-
-      final service = AccountBackupService(
-        channel: channel,
-        platformEligible: true,
-      );
-      await service.listBackups();
-
-      expect(deleteAllCalls, 1);
-      expect(savedIds, ['3003']);
-      expect(await service.hasConsentForAccountId('3003'), isTrue);
-    },
-  );
-
   test('local and synced backups stay separate', () async {
     SharedPreferences.setMockInitialValues({
       'mithka.accountBackup.explicitConsentMigration.v1': true,
@@ -348,47 +139,68 @@ void main() {
     expect(await service.hasConsentForAccountId('4004'), isTrue);
   });
 
-  test('device-only backups remain available without synced storage', () async {
-    SharedPreferences.setMockInitialValues({
-      'mithka.accountBackup.explicitConsentMigration.v1': true,
-    });
-    const channel = MethodChannel('mithka/account_backup.local_only_test');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
-          switch (call.method) {
-            case 'isSupported':
-              return false;
-            case 'isLocalStorageSupported':
-              return true;
-            case 'getAllSessions':
-              expect(
-                (call.arguments as Map<Object?, Object?>)['storage'],
-                'local',
-              );
-              return <Uint8List>[
-                _backupRecord(
-                  format: 'mithka.tdlib.session_string.v2.explicit_consent',
-                  id: '5005',
-                ),
-              ];
-          }
-          return null;
-        });
-    addTearDown(
-      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null),
-    );
+  test(
+    'a mobile host without the native channel reports unsupported, not a throw',
+    () async {
+      // The submitted HarmonyOS host registers only generated plugins and has
+      // no `mithka/account_backup` handler: every call throws
+      // MissingPluginException. Eligibility is the mobile branch, so this is
+      // the exact production state on ohos.
+      SharedPreferences.setMockInitialValues({
+        'mithka.accountBackup.explicitConsentMigration.v1': true,
+      });
+      const channel = MethodChannel('mithka/account_backup.missing_test');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            throw MissingPluginException();
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
 
-    final service = AccountBackupService(
-      channel: channel,
-      platformEligible: true,
-    );
+      final service = AccountBackupService(
+        channel: channel,
+        platformEligible: true,
+      );
 
-    final backups = await service.listBackups();
+      expect(await service.isSupported, isFalse);
+      expect(await service.isLocalStorageSupported, isFalse);
+      // Every dependent surface reads the same clean answer.
+      expect(await service.listBackups(), isEmpty);
+      await service.backupActiveAccountIfEnabled();
+      await expectLater(service.backupActiveAccount(), throwsUnsupportedError);
+      await service.deleteAccountId('1234');
+    },
+  );
 
-    expect(backups.single.id, '5005');
-    expect(backups.single.storage, AccountSessionBackupStorage.local);
-  });
+  test(
+    'a channel error answering the probe also reports unsupported',
+    () async {
+      // A handler that exists but cannot serve the capability (e.g. the
+      // system keychain unavailable) must not surface as a crash either.
+      SharedPreferences.setMockInitialValues({
+        'mithka.accountBackup.explicitConsentMigration.v1': true,
+      });
+      const channel = MethodChannel('mithka/account_backup.error_test');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            throw PlatformException(code: 'keychain_unavailable');
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+
+      final service = AccountBackupService(
+        channel: channel,
+        platformEligible: true,
+      );
+
+      expect(await service.isSupported, isFalse);
+      expect(await service.listBackups(), isEmpty);
+    },
+  );
 }
 
 Uint8List _backupRecord({

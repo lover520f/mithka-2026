@@ -18,7 +18,8 @@ SUFFIXES = (
     "windows-arm64.zip",
     "windows-x64-setup.exe",
     "windows-arm64-setup.exe",
-    "macos-universal.zip",
+    "macos-arm64.zip",
+    "macos-x64.zip",
     "linux-x64.tar.gz",
     "linux-arm64.tar.gz",
     "linux-x64.AppImage",
@@ -83,7 +84,13 @@ def verify_build(run, jobs, artifacts, source, controller, version):
         matches = [job for job in jobs if job["name"] == name]
         if len(matches) != 1 or matches[0].get("conclusion") != "success":
             raise Error(f"package prerequisite did not pass: {name}")
-    failed = [job for job in jobs if job.get("conclusion") == "failure"]
+    # The release job does not need the optional HarmonyOS package.
+    optional = {"Build HarmonyOS hap"}
+    failed = [
+        job
+        for job in jobs
+        if job.get("conclusion") == "failure" and job["name"] not in optional
+    ]
     if len(failed) != 1 or failed[0]["name"] != "Publish GitHub Release":
         raise Error("failure was not confined to GitHub publication")
     failed_steps = [
@@ -91,10 +98,20 @@ def verify_build(run, jobs, artifacts, source, controller, version):
         for step in failed[0].get("steps", [])
         if step.get("conclusion") == "failure"
     ]
-    if failed_steps != ["Publish to GitHub Release"]:
+    # Older release workflows required the optional HarmonyOS package in their
+    # artifact check, so a failed HarmonyOS build failed that step instead. The
+    # twelve required artifacts are verified independently below.
+    ohos_failed = any(
+        job["name"] in optional and job.get("conclusion") == "failure"
+        for job in jobs
+    )
+    allowed_steps = [["Publish to GitHub Release"]]
+    if ohos_failed:
+        allowed_steps.append(["Verify and list artifacts"])
+    if failed_steps not in allowed_steps:
         raise Error("publication failed outside its release API step")
     for job in jobs:
-        if job["name"] in required or job is failed[0]:
+        if job["name"] in required or job["name"] in optional or job is failed[0]:
             continue
         if (
             job["name"].startswith("Required quality gate / Merge snapshot ")
@@ -119,7 +136,8 @@ def verify_build(run, jobs, artifacts, source, controller, version):
             for platform in (
                 "windows-x64",
                 "windows-arm64",
-                "macos-universal",
+                "macos-arm64",
+                "macos-x64",
                 "linux-x64",
                 "linux-arm64",
             )
@@ -130,12 +148,12 @@ def verify_build(run, jobs, artifacts, source, controller, version):
         f"appimage-linux-arm64-{date}",
     }
     if (
-        len(names) != 11
+        len(names) != 12
         or set(names) != expected
         or any(a.get("expired") for a in artifacts)
     ):
         raise Error(
-            "original run does not have exactly the eleven live package artifacts"
+            "original run does not have exactly the twelve live package artifacts"
         )
     return date
 
@@ -255,7 +273,7 @@ def publish(plan, run_id, directory, publication_run_id):
     if {p.name for p in paths} != expected or any(
         not p.is_file() or p.is_symlink() for p in paths
     ):
-        raise Error("downloaded files do not match the eleven verified packages")
+        raise Error("downloaded files do not match the twelve verified packages")
     files = {
         p.name: {
             "size": p.stat().st_size,
@@ -376,7 +394,7 @@ def publish(plan, run_id, directory, publication_run_id):
         raise Error("release was not published as stable")
     verify_assets(release, files)
     verify_source(plan["source_sha"], command("git", "rev-parse", "HEAD"))
-    print(f"Published {tag}: eleven verified packages from {plan['source_sha']}.")
+    print(f"Published {tag}: twelve verified packages from {plan['source_sha']}.")
 
 
 def main():

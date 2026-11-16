@@ -66,7 +66,10 @@
     <string name="accountBackupStorageOnDevice">この端末</string>
     <string name="accountBackupTitle">アカウントバックアップ</string>
     <string name="accountBackupUnavailable">このデバイスまたは配布版ではアカウントのバックアップを利用できません。</string>
-    <string name="accountBackupUserId">ユーザー ID: {value1}</string>
+        <string name="accountPickerTitle">アカウントを選択</string>
+    <string name="accountPickerMessage">このチャットは現在のアカウントにありません。開くアカウントを選択してください。</string>
+    <string name="accountPickerHasChat">チャットあり</string>
+<string name="accountBackupUserId">ユーザー ID: {value1}</string>
     <string name="accountSecurityANewCodeWasSent">新しいコードが送信されました。</string>
     <string name="accountSecurityAccountAndContactsWillMove">Telegram アカウントと連絡先が新しい番号に移行します。</string>
     <string name="accountSecurityAccountInactivity">アカウントの非アクティブ性</string>
@@ -529,6 +532,7 @@
     <string name="appearanceShowChatListSearch">チャット検索</string>
     <string name="appearanceShowEditAndReadMarks">編集済み・既読マークを表示</string>
     <string name="appearanceShowFolderBadges">フォルダーバッジ</string>
+    <string name="appearanceHideAllChatsFolder">「すべて」フォルダーを非表示</string>
     <string name="appearanceShowGroupMemberTitles">グループメンバーの肩書きを表示</string>
     <string name="appearanceShowMessageBubbles">メッセージバブルを表示</string>
     <string name="appearanceShowMessageBubblesDescription">オフにするとカスタムバブル画像は使われず、テーマ本来のバブルが適用されます。選択したスタイルは保持されます。</string>
@@ -1629,6 +1633,8 @@
     <string name="generalSendMessageWithEnter">Enterキーでメッセージを送信</string>
     <string name="generalShowSavedMessagesIdentity">自分のプロフィールの代わりに「保存済みメッセージ」を表示</string>
     <string name="generalStorage">ストレージ</string>
+    <string name="generalSystemPhotoPicker">システムの写真ピッカーを使用</string>
+    <string name="generalSystemPhotoPickerHint">写真ライブラリへのアクセスを許可せずに写真や動画を選べます。オリジナルとLive Photosのオプションは使えません。</string>
     <string name="generalTitle">一般</string>
     <string name="gesturesChatActions">チャット操作</string>
     <string name="gesturesChatActionsModeDescription">1本指：チャット操作・2本指：フォルダー切替・3本指：アカウント切替</string>
@@ -2069,6 +2075,10 @@
     <string name="linkHandlerTelegramStarsCount">{value1} テレグラムスター</string>
     <string name="linkHandlerUnsupportedTelegramLink">この Telegram リンクを開くことはまだサポートされていません</string>
     <string name="linkHandlerWritingStyle">文体</string>
+    <string name="linkLogInToOpen">ログインするとこのリンクを開けます。</string>
+    <string name="linkNotTelegramLink">Mithka で開けるのは Telegram リンクだけです。</string>
+    <string name="linkOpenTmeInMithka">t.me リンクを Mithka で開く</string>
+    <string name="linkOpenTmeInMithkaHint">Android の設定で、Mithka で開くリンクに t.me を追加します。Telegram が入っている場合は、先に Telegram のリンクを開く設定をオフにしてください。</string>
     <string name="listSeparator">、</string>
     <string name="locationDetailFetchingLocation">位置情報を取得中…</string>
     <string name="locationPickerDragMapToChoose">地図をドラッグして位置を選択</string>
@@ -2529,6 +2539,7 @@
     <string name="passkeysRemoved">パスキーを削除しました</string>
     <string name="passkeysTitle">パスキー</string>
     <string name="passkeysUnknownName">名前のないパスキー</string>
+    <string name="pickerSystemPicker">システム</string>
     <string name="pinnedMessagesEmpty">ピン留めメッセージはありません</string>
     <string name="pinnedMessagesSentBy">{value1} が送信</string>
     <string name="pollComposerAddOption">選択肢を追加</string>
@@ -2773,6 +2784,7 @@
     <string name="proxyHostOrIp">ホストまたは IP</string>
     <string name="proxyOptional">任意</string>
     <string name="proxyPassword">パスワード</string>
+    <string name="proxyPath">パス</string>
     <string name="proxyPort">ポート</string>
     <string name="proxySecret">シークレット</string>
     <string name="proxyServer">サーバー</string>
@@ -3658,7 +3670,9 @@
     <string name="topicChatLoading">読み込み中</string>
     <string name="topicChatMarkAllRead">Mark all as read</string>
     <string name="topicChatMarkAllReadFailed">Failed to mark all topics as read</string>
-    <string name="topicChatMemberCount">{value1}人</string>
+    <plurals name="topicChatMemberCount">
+        <item quantity="other">{count}人</item>
+    </plurals>
     <string name="topicChatMostRelevant">関連度順</string>
     <string name="topicChatMuteFailed">通知オフの設定に失敗しました</string>
     <string name="topicChatMuteMessagesToggle">メッセージ通知をオフ</string>
@@ -3778,6 +3792,7 @@
     <string name="videoPlayerPlaying">再生中</string>
     <string name="videoPlayerSeekBackwardTenSeconds">10 秒戻る</string>
     <string name="videoPlayerSeekForwardTenSeconds">10 秒進む</string>
+    <string name="videoPlayerHoldPlaybackSpeed">長押しで高速再生</string>
     <string name="videoPlayerStreamInspector">ストリームインスペクター</string>
     <string name="videoPlayerVideoNumber">動画 {value1}</string>
     <string name="videoPlayerVideoZoom">動画ズーム</string>
@@ -3916,4 +3931,15 @@
     <plurals name="giftDurationDays">
         <item quantity="other">{count}日間</item>
     </plurals>
+    <string name="storageDownloadLocation">ダウンロード先</string>
+    <string name="storageDownloadCacheLocation">ダウンロードキャッシュ</string>
+    <string name="storageDownloadSaveFolder">ファイルの保存先フォルダ</string>
+    <string name="storageDownloadShared">共有ストレージ</string>
+    <string name="storageDownloadPrivate">アプリ専用の内部ストレージ</string>
+    <string name="storageDownloadRestart">変更は Mithka の次回起動時に反映されます。既存のダウンロードは自動で移行されます。</string>
+    <string name="storageDownloadSaveHint">ダウンロード画面の「名前を付けて保存」でファイルをここにコピーできます。保存したコピーは Mithka のアンインストール後も残ります。</string>
+    <string name="storageDownloadMigrationFailed">ダウンロードを移行できませんでした。元の保存先を使用し、次回起動時に再試行します。</string>
+    <string name="storageDownloadLocationFailed">ダウンロード先にアクセスできませんでした</string>
+    <string name="storageDownloadFolderNotSelected">フォルダを選択</string>
+    <string name="storageDownloadCurrent">現在の保存先：{value1}</string>
 </resources>

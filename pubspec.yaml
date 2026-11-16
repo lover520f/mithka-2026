@@ -1,7 +1,7 @@
 name: mithka
 description: "Mithka — a cross-platform Telegram client (Flutter), built on TDLib."
 publish_to: 'none'
-version: 1.11.0+301
+version: 1.13.0+305
 
 environment:
   sdk: ^3.12.2
@@ -43,6 +43,9 @@ dependencies:
   # incomplete (including a mismatched macOS podspec). Keep the last mobile-
   # only release so desktop builds compile and voice notes remain mobile-only.
   flutter_sound: 9.28.0
+  # HarmonyOS plugs its own recorder in behind this interface
+  # (lib/platform/ohos_media_bridge.dart); same release as flutter_sound.
+  flutter_sound_platform_interface: 9.28.0
   logger: ^2.7.0
   # macOS voice messages use AVFoundation through record and send AAC/M4A,
   # which TDLib accepts as a voice-note input alongside OGG/Opus.
@@ -50,9 +53,11 @@ dependencies:
   # 13.x hardcodes Android compileSdk 37, which is not installed in the pinned
   # Flutter/Android toolchain. Keep the newest SDK-36-compatible release.
   permission_handler: ^12.0.3
+  permission_handler_platform_interface: ^4.4.0
 
   # Media pickers for the composer's + panel: photos/camera, documents, location.
   image_picker: ^1.2.3
+  image_picker_platform_interface: ^2.11.1
   camera: ^0.12.0+2
   # 11.x assumes AGP 9 built-in Kotlin is enabled and omits its Kotlin plugin;
   # this project keeps built-in Kotlin disabled for plugins that still apply KGP.
@@ -88,7 +93,7 @@ dependencies:
   f_videoplayer:
     git:
       url: https://github.com/iebb/f-videoplayer.git
-      ref: v0.5.9
+      ref: v0.5.11
       path: packages/f_videoplayer
   # Main-window chrome uses DragToMoveArea on desktop. Keep this direct rather
   # than relying on the video-player package's transitive dependency.
@@ -97,7 +102,7 @@ dependencies:
   f_videoplayer_fvp:
     git:
       url: https://github.com/iebb/f-videoplayer.git
-      ref: v0.5.9
+      ref: v0.5.11
       path: packages/f_videoplayer_fvp
   # Story video preparation: native 60-second segmentation and mobile-friendly
   # re-encoding before TDLib's inputStoryContentVideo upload.
@@ -107,7 +112,7 @@ dependencies:
   f_videoplayer_pip:
     git:
       url: https://github.com/iebb/f-videoplayer.git
-      ref: v0.5.9
+      ref: v0.5.11
       path: packages/f_videoplayer_pip
   flutter_local_notifications: ^22.2.0
   google_fonts: ^8.2.1
@@ -135,6 +140,38 @@ dependencies:
   local_auth: ^3.0.2
   app_links: ^7.2.1
 
+  # HarmonyOS (OpenHarmony) federated plugin implementations. Each port below
+  # declares a `platforms: ohos` plugin (most also `implements:` the host
+  # package); stock flutter_tools ignores the ohos platform on Android/iOS/
+  # desktop, while the OHOS Flutter fork resolves these as the platform
+  # implementation when building for HarmonyOS. Regular dependencies (not
+  # overrides) so the OHOS solver sees them; harmless elsewhere.
+  # The remaining ports (package_info_plus / permission_handler / file_picker
+  # _ohos) cap their SDK at <3.0.0 and so cannot resolve under stock Dart 3;
+  # they live in pubspec_overrides.ohos.yaml and are merged in by
+  # scripts/enable-ohos-plugins.sh for OHOS builds.
+  # NOTE: camera / mobile_scanner / flutter_sound / photo_manager /
+  # flutter_local_notifications have no ohos port on pub yet — those
+  # capabilities are missing on HarmonyOS for now.
+
+  # Persisted preferences on OHOS (implements shared_preferences).
+  shared_preferences_ohos: ^2.2.0
+  # TDLib database / files directories on OHOS (implements path_provider).
+  path_provider_ohos: ^2.2.1
+  # External links and the system viewer on OHOS (implements url_launcher).
+  url_launcher_ohos: ^6.3.0
+  # Accelerometer/gyroscope on OHOS — companion plugin whose native side
+  # serves sensors_plus' channels (sensors_plus has no ohos platform entry).
+  sensors_plus_ohos: ^0.1.2
+  # Deep links (t.me / tg://) on OHOS — companion for app_links.
+  app_links_ohos: ^0.2.0
+  # Opening downloaded files on OHOS (implements open_filex).
+  open_filex_ohos: ^4.7.0
+  # Biometric unlock on OHOS (implements local_auth).
+  local_auth_ohos: ^1.0.0
+  # Auth-key login web view on OHOS (implements webview_flutter).
+  webview_flutter_ohos: ^3.15.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -153,8 +190,16 @@ dependency_overrides:
   fvp:
     git:
       url: https://github.com/iebb/f-videoplayer.git
-      ref: v0.5.9
+      ref: v0.5.11
       path: third_party/fvp
+  # Upstream's Linux plugin links the build host's FFmpeg 6, which bloats the
+  # bundle and breaks startup without it; this copy drops its Linux platform and
+  # f_videoplayer_fvp decodes Linux thumbnails with MDK's bundled FFmpeg.
+  fc_native_video_thumbnail:
+    git:
+      url: https://github.com/iebb/f-videoplayer.git
+      ref: v0.5.11
+      path: third_party/fc_native_video_thumbnail
 
 flutter_launcher_icons:
   image_path: "assets/app_icon.png"

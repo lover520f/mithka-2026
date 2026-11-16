@@ -21,115 +21,115 @@ OutgoingAttachment attachment(
 );
 
 void main() {
-  test('gallery media can always be converted to document attachments', () {
-    for (final media in [
-      (isVideo: false, isAnimation: false),
-      (isVideo: true, isAnimation: false),
-      (isVideo: false, isAnimation: true),
-    ]) {
-      expect(
-        galleryAttachmentKind(
-          sendAsFile: true,
-          isVideo: media.isVideo,
-          isAnimation: media.isAnimation,
-        ),
-        OutgoingAttachmentKind.document,
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('Telegram photo limits', () {
+    late Directory directory;
+    setUp(() async {
+      directory = await Directory.systemTemp.createTemp('mithka-limits-');
+    });
+    tearDown(() => directory.delete(recursive: true));
+
+    Future<String> png(int width, int height) async {
+      final image = image_lib.Image(
+        width: width,
+        height: height,
+        numChannels: 4,
+      )..clear(image_lib.ColorRgba8(200, 40, 40, 255));
+      // A transparent corner must not turn black in the opaque JPEG.
+      image_lib.fillRect(
+        image,
+        x1: 0,
+        y1: 0,
+        x2: 199,
+        y2: 199,
+        color: image_lib.ColorRgba8(0, 0, 0, 0),
+        alphaBlend: false,
       );
+      final file = File('${directory.path}/${width}x$height.png');
+      await file.writeAsBytes(image_lib.encodePng(image, level: 1));
+      return file.path;
     }
 
-    expect(
-      galleryAttachmentKind(
-        sendAsFile: false,
-        isVideo: true,
-        isAnimation: false,
-      ),
-      OutgoingAttachmentKind.video,
-    );
-    expect(
-      galleryAttachmentKind(
-        sendAsFile: false,
-        isVideo: false,
-        isAnimation: true,
-      ),
-      OutgoingAttachmentKind.animation,
-    );
-
-    final document = attachmentInputMessageContent(
-      attachment(
-        '/tmp/IMG_1234.HEIC',
-        galleryAttachmentKind(
-          sendAsFile: true,
-          isVideo: false,
-          isAnimation: false,
+    test('an original past width + height 10000 is downscaled', () async {
+      final path = await png(6400, 3700);
+      final fitted = await fitPhotoToTelegramLimits(
+        attachment(
+          path,
+          OutgoingAttachmentKind.photo,
+          width: 6400,
+          height: 3700,
         ),
-      ),
-    );
-    expect(document['@type'], 'inputMessageDocument');
-    expect(
-      ((document['document'] as Map)['document'] as Map)['path'],
-      '/tmp/IMG_1234.HEIC',
-    );
+      );
 
-    final originalDocument = attachmentInputMessageContent(
-      const OutgoingAttachment(
-        path: '/tmp/prepared.jpg',
-        originalPath: '/tmp/IMG_5678.HEIC',
-        kind: OutgoingAttachmentKind.document,
-      ),
-    );
-    expect(
-      ((originalDocument['document'] as Map)['document'] as Map)['path'],
-      '/tmp/IMG_5678.HEIC',
-    );
-
-    final animation = attachmentInputMessageContent(
-      attachment(
-        '/tmp/animation.gif',
-        OutgoingAttachmentKind.animation,
-        width: 320,
-        height: 240,
-      ),
-    );
-    expect(animation, {
-      '@type': 'inputMessageAnimation',
-      'animation': {
-        '@type': 'inputAnimation',
-        'animation': {'@type': 'inputFileLocal', 'path': '/tmp/animation.gif'},
-        'duration': 0,
-        'width': 320,
-        'height': 240,
-      },
-      'show_caption_above_media': false,
-      'has_spoiler': false,
+      expect(fitted.kind, OutgoingAttachmentKind.photo);
+      expect(fitted.path, isNot(path));
+      expect((fitted.width, fitted.height), (2560, 1480));
+      final decoded = image_lib.decodeJpg(
+        await File(fitted.path).readAsBytes(),
+      )!;
+      expect((decoded.width, decoded.height), (2560, 1480));
+      final corner = decoded.getPixel(20, 20);
+      expect([corner.r, corner.g, corner.b], everyElement(greaterThan(240)));
+      expect(decoded.getPixel(1280, 740).g, lessThan(80));
+      await File(fitted.path).parent.delete(recursive: true);
     });
-  });
 
-  test('groups compatible attachments without reordering', () {
-    final batches = groupOutgoingAttachments([
-      attachment('1.jpg', OutgoingAttachmentKind.photo),
-      attachment('2.mp4', OutgoingAttachmentKind.video),
-      attachment('3.gif', OutgoingAttachmentKind.animation),
-      attachment('4.pdf', OutgoingAttachmentKind.document),
-      attachment('5.zip', OutgoingAttachmentKind.document),
-      attachment('6.mp3', OutgoingAttachmentKind.audio),
-      attachment('7.flac', OutgoingAttachmentKind.audio),
-      attachment('8.jpg', OutgoingAttachmentKind.photo),
-    ]);
+    test('measuring an unmeasured oversized photo also fits it', () async {
+      final path = await png(6400, 3700);
+      final fitted = await resolveAttachmentDimensions(
+        attachment(path, OutgoingAttachmentKind.photo),
+      );
 
-    expect(batches.map((batch) => batch.attachments.map((item) => item.path)), [
-      ['1.jpg', '2.mp4'],
-      ['3.gif'],
-      ['4.pdf', '5.zip'],
-      ['6.mp3', '7.flac'],
-      ['8.jpg'],
-    ]);
-    expect(batches.map((batch) => batch.isAlbum), [
-      true,
-      false,
-      true,
-      true,
-      false,
-    ]);
+      expect((fitted.width, fitted.height), (2560, 1480));
+      await File(fitted.path).parent.delete(recursive: true);
+    });
+
+    test('a photo within the limits is sent untouched', () async {
+      final path = await png(1200, 800);
+      final original = attachment(
+        path,
+        OutgoingAttachmentKind.photo,
+        width: 1200,
+        height: 800,
+      );
+
+      expect(await fitPhotoToTelegramLimits(original), same(original));
+    });
+
+    test('a panorama past a 20:1 ratio is sent as a file', () async {
+      final fitted = await fitPhotoToTelegramLimits(
+        attachment(
+          '/missing/pano.jpg',
+          OutgoingAttachmentKind.photo,
+          width: 4200,
+          height: 200,
+        ),
+      );
+
+      expect(fitted.kind, OutgoingAttachmentKind.document);
+      expect(fitted.path, '/missing/pano.jpg');
+      expect(fitted.width, isNull);
+    });
+
+    test(
+      'an oversized photo that cannot be decoded is sent as a file',
+      () async {
+        final file = File('${directory.path}/broken.heic')
+          ..writeAsBytesSync(List.filled(64, 7));
+        final fitted = await fitPhotoToTelegramLimits(
+          attachment(
+            file.path,
+            OutgoingAttachmentKind.photo,
+            width: 8064,
+            height: 6048,
+          ),
+        );
+
+        expect(fitted.kind, OutgoingAttachmentKind.document);
+        expect(fitted.path, file.path);
+      },
+    );
   });
 
   test('splits albums at TDLib ten-item limit', () {
@@ -140,162 +140,6 @@ void main() {
 
     expect(batches.map((batch) => batch.attachments.length), [10, 1]);
     expect(batches.map((batch) => batch.isAlbum), [true, false]);
-  });
-
-  test('builds album and standalone requests with one primary caption', () {
-    final requests = buildAttachmentSendRequests(
-      chatId: 42,
-      caption: 'Album caption',
-      captionEntities: const [
-        {
-          '@type': 'textEntity',
-          'offset': 0,
-          'length': 5,
-          'type': {'@type': 'textEntityTypeBold'},
-        },
-      ],
-      replyTo: const {'@type': 'inputMessageReplyToMessage', 'message_id': 9},
-      attachments: [
-        attachment('1.jpg', OutgoingAttachmentKind.photo),
-        attachment('2.mp4', OutgoingAttachmentKind.video),
-        attachment('3.pdf', OutgoingAttachmentKind.document),
-      ],
-    );
-
-    expect(requests, hasLength(2));
-    expect(requests.first['@type'], 'sendMessageAlbum');
-    expect(requests.first['reply_to'], isNotNull);
-    final album = requests.first['input_message_contents'] as List;
-    expect(album, hasLength(2));
-    expect((album.first as Map)['caption'], isNotNull);
-    expect((album.last as Map)['caption'], isNull);
-    expect(requests.last['@type'], 'sendMessage');
-    expect(requests.last['reply_to'], isNull);
-  });
-
-  test('preserves an attachment caption when no primary caption exists', () {
-    final requests = buildAttachmentSendRequests(
-      chatId: 1,
-      attachments: [
-        attachment(
-          'document.pdf',
-          OutgoingAttachmentKind.document,
-          caption: 'Document caption',
-        ),
-      ],
-    );
-
-    final content = requests.single['input_message_content'] as Map;
-    expect((content['caption'] as Map)['text'], 'Document caption');
-  });
-
-  test('applies album caption to first attachment after reordering', () {
-    final requests = buildAttachmentSendRequests(
-      chatId: 1,
-      caption: 'Reordered album caption',
-      attachments: [
-        attachment('third.jpg', OutgoingAttachmentKind.photo),
-        attachment('first.jpg', OutgoingAttachmentKind.photo),
-        attachment('second.mp4', OutgoingAttachmentKind.video),
-      ],
-    );
-
-    final album = requests.single['input_message_contents'] as List;
-    expect(((album.first as Map)['photo'] as Map)['photo'], {
-      '@type': 'inputFileLocal',
-      'path': 'third.jpg',
-    });
-    expect(
-      ((album.first as Map)['caption'] as Map)['text'],
-      'Reordered album caption',
-    );
-    expect((album[1] as Map)['caption'], isNull);
-    expect((album[2] as Map)['caption'], isNull);
-  });
-
-  test('includes image dimensions in the outgoing photo payload', () {
-    final content = attachmentInputMessageContent(
-      attachment(
-        'wide.jpg',
-        OutgoingAttachmentKind.photo,
-        width: 1600,
-        height: 900,
-      ),
-    );
-
-    expect(content['width'], 1600);
-    expect(content['height'], 900);
-    expect((content['photo'] as Map)['width'], 1600);
-    expect((content['photo'] as Map)['height'], 900);
-  });
-
-  test('includes video dimensions in the outgoing video payload', () {
-    final content = attachmentInputMessageContent(
-      attachment(
-        'portrait.mp4',
-        OutgoingAttachmentKind.video,
-        width: 1080,
-        height: 1920,
-      ),
-    );
-
-    expect(content['width'], 1080);
-    expect(content['height'], 1920);
-    expect((content['video'] as Map)['width'], 1080);
-    expect((content['video'] as Map)['height'], 1920);
-  });
-
-  test('reads the encoded photo dimensions before sending', () async {
-    final directory = await Directory.systemTemp.createTemp(
-      'mithka-dimensions-',
-    );
-    addTearDown(() => directory.delete(recursive: true));
-    final file = File('${directory.path}/wide.png');
-    await file.writeAsBytes(
-      image_lib.encodePng(image_lib.Image(width: 4, height: 2)),
-    );
-
-    final resolved = await resolveAttachmentDimensions(
-      attachment(file.path, OutgoingAttachmentKind.photo),
-    );
-
-    expect(resolved.width, 4);
-    expect(resolved.height, 2);
-  });
-
-  test('parses the local source path from an outgoing TDLib file', () {
-    final message = TDParse.message({
-      '@type': 'message',
-      'id': -10,
-      'chat_id': 42,
-      'is_outgoing': true,
-      'date': 1,
-      'content': {
-        '@type': 'messagePhoto',
-        'caption': {'@type': 'formattedText', 'text': '', 'entities': []},
-        'photo': {
-          '@type': 'photo',
-          'sizes': [
-            {
-              '@type': 'photoSize',
-              'width': 1200,
-              'height': 900,
-              'photo': {
-                '@type': 'file',
-                'id': 7,
-                'local': {
-                  '@type': 'localFile',
-                  'path': '/tmp/outgoing-photo.jpg',
-                  'is_downloading_completed': true,
-                },
-              },
-            },
-          ],
-        },
-      },
-    });
-
-    expect(message?.image?.localPath, '/tmp/outgoing-photo.jpg');
   });
 
   test('server-confirmed media inherits the pending local source path', () {

@@ -73,10 +73,15 @@ export 'telegram_premium_features.dart';
 typedef _TdLinkQuery =
     Future<Map<String, dynamic>> Function(Map<String, dynamic> request);
 
+/// Opens [url] in the app when it is a Telegram link.
+///
+/// With [keepTelegramInApp], a tg:// link that Mithka cannot handle shows a
+/// notice instead of being handed to another installed Telegram client.
 Future<void> openLink(
   BuildContext context,
   String url, {
   InternalChatLinkTarget? sourceChat,
+  bool keepTelegramInApp = false,
 }) async {
   final nav = Navigator.of(context);
   sourceChat ??= InternalChatLinkScope.targetOf(context);
@@ -115,6 +120,7 @@ Future<void> openLink(
       fallbackLink: fallbackLink,
       sourceChat: sourceChat,
       query: query,
+      keepTelegramInApp: keepTelegramInApp,
     );
   } catch (_) {
     if (!await _openTelegramFallback(
@@ -124,9 +130,44 @@ Future<void> openLink(
           query: query,
         ) &&
         context.mounted) {
-      await _openBrowserLink(context, fallbackLink);
+      await _openUnhandledLink(
+        context,
+        fallbackLink,
+        keepTelegramInApp: keepTelegramInApp,
+      );
     }
   }
+}
+
+bool _isTelegramSchemeLink(String link) =>
+    Uri.tryParse(link.trim())?.scheme.toLowerCase() == 'tg';
+
+/// Opens a Telegram link Mithka could not route in-app with the user's
+/// browser choice, or reports it as unsupported when it must stay in the app.
+///
+/// A tg:// link is offered to other apps only (see externalLaunchRouteFor):
+/// Mithka claims tg:// itself, so when no other app takes it, or the platform
+/// cannot exclude Mithka (iOS), it ends with the same notice instead of a
+/// launch that could reopen Mithka.
+Future<void> _openUnhandledLink(
+  BuildContext context,
+  String link, {
+  required bool keepTelegramInApp,
+  String? message,
+}) async {
+  if (!_isTelegramSchemeLink(link)) {
+    await _openBrowserLink(context, link);
+    return;
+  }
+  final uri = Uri.tryParse(link.trim());
+  if (!keepTelegramInApp && uri != null && await launchInDefaultBrowser(uri)) {
+    return;
+  }
+  if (!context.mounted) return;
+  showToast(
+    context,
+    message ?? AppStrings.t(AppStringKeys.linkHandlerUnsupportedTelegramLink),
+  );
 }
 
 Future<void> openInternalLinkType(
@@ -167,6 +208,7 @@ Future<void> _dispatchInternalLinkType(
   required String fallbackLink,
   required InternalChatLinkTarget? sourceChat,
   required _TdLinkQuery query,
+  bool keepTelegramInApp = false,
 }) async {
   switch (type.type) {
     case 'internalLinkTypePublicChat':
@@ -183,7 +225,11 @@ Future<void> _dispatchInternalLinkType(
       // this branch a network hiccup on searchPublicChat silently swallows
       // the click (no navigation, no fallback, no message).
       if (!opened && context.mounted) {
-        await _openBrowserLink(context, fallbackLink);
+        await _openUnhandledLink(
+          context,
+          fallbackLink,
+          keepTelegramInApp: keepTelegramInApp,
+        );
       }
     case 'internalLinkTypeMessage':
       // TDLib can canonicalize a message link (notably tg:// variants).
@@ -545,7 +591,12 @@ Future<void> _dispatchInternalLinkType(
       }
     case 'internalLinkTypeUnknownDeepLink':
       if (context.mounted) {
-        await _showDeepLinkInfoOrExternal(context, link, query: query);
+        await _showDeepLinkInfoOrExternal(
+          context,
+          link,
+          query: query,
+          keepTelegramInApp: keepTelegramInApp,
+        );
       }
     default:
       if (!await _openTelegramFallback(
@@ -555,7 +606,11 @@ Future<void> _dispatchInternalLinkType(
             query: query,
           ) &&
           context.mounted) {
-        await _openBrowserLink(context, link);
+        await _openUnhandledLink(
+          context,
+          link,
+          keepTelegramInApp: keepTelegramInApp,
+        );
       }
   }
 }
@@ -776,7 +831,9 @@ Future<void> _addProxyFromLink(BuildContext context, ProxyConfig config) async {
   final ok = await showAppConfirmDialog(
     context,
     title: AppStrings.t(AppStringKeys.proxyAddProxy),
-    message: '${config.label} ${config.server}:${config.port}',
+    message:
+        '${config.label} ${config.server}:${config.port}'
+        '${config.path.isEmpty ? '' : '/${config.path}'}',
     confirmText: AppStrings.t(AppStringKeys.proxyAddProxy),
   );
   if (!ok || !context.mounted) return;
@@ -2591,12 +2648,21 @@ Future<void> _showDeepLinkInfoOrExternal(
   BuildContext context,
   String link, {
   _TdLinkQuery? query,
+  bool keepTelegramInApp = false,
 }) async {
   final queryAccount = query ?? TdClient.shared.query;
+  String? infoText;
   try {
-    await queryAccount({'@type': 'getDeepLinkInfo', 'link': link});
+    final info = await queryAccount({'@type': 'getDeepLinkInfo', 'link': link});
+    infoText = info.obj('text')?.str('text')?.trim();
   } catch (_) {}
-  if (context.mounted) await _openBrowserLink(context, link);
+  if (!context.mounted) return;
+  await _openUnhandledLink(
+    context,
+    link,
+    keepTelegramInApp: keepTelegramInApp,
+    message: infoText == null || infoText.isEmpty ? null : infoText,
+  );
 }
 
 Future<bool> _openPrivateMessageLink(
@@ -2772,7 +2838,9 @@ Future<void> _openBrowserLink(
     case LinkOpenTarget.internalBrowser:
       if (!internalBrowserCanOpen(uri) ||
           !internalBrowserSupported(platform: platform)) {
-        await launchInDefaultBrowser(uri);
+        if (!await launchInDefaultBrowser(uri) && context.mounted) {
+          _reportTelegramLaunchFailure(context, uri);
+        }
         return;
       }
       await Navigator.of(context).push<void>(
@@ -2784,6 +2852,18 @@ Future<void> _openBrowserLink(
         ),
       );
     case LinkOpenTarget.defaultBrowser:
-      await launchInDefaultBrowser(uri);
+      if (!await launchInDefaultBrowser(uri) && context.mounted) {
+        _reportTelegramLaunchFailure(context, uri);
+      }
   }
+}
+
+/// A Telegram link that neither Mithka nor any other app could open must not
+/// end as a silent tap. Other links keep their existing silent failure.
+void _reportTelegramLaunchFailure(BuildContext context, Uri uri) {
+  if (normalizeTelegramLink(uri.toString()) == null) return;
+  showToast(
+    context,
+    AppStrings.t(AppStringKeys.linkHandlerOpenTelegramLinkFailed),
+  );
 }

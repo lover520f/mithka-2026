@@ -2410,19 +2410,24 @@ class ChatViewModel extends ChangeNotifier {
         const MessageSendConfiguration(),
   }) async {
     if (attachments.isEmpty) return;
+    // Capture the reply before re-encoding can yield to a reply change.
+    final replyRevision = _replyRevision;
+    final replyTo = replyToInput;
+    // The picker hands over measured originals, so composers that skip
+    // resolveAttachmentDimensions still need Telegram's photo limits applied.
+    attachments = await Future.wait(attachments.map(fitPhotoToTelegramLimits));
     final spaced = _spacedOutgoing(caption, captionEntities);
     final allEntities = [
       ...spaced.entities,
       ..._mentionEntitiesFor(spaced.text, spaced.entities),
     ];
-    final replyRevision = _replyRevision;
     final requests = buildAttachmentSendRequests(
       chatId: chatId,
       topicId: _forumTopicRef,
       attachments: attachments,
       caption: spaced.text,
       captionEntities: allEntities,
-      replyTo: replyToInput,
+      replyTo: replyTo,
       sendConfiguration: sendConfiguration,
     );
     _clearDraft();
@@ -3664,6 +3669,7 @@ class ChatViewModel extends ChangeNotifier {
     required String caption,
     List<Map<String, dynamic>> entities = const [],
   }) async {
+    attachment = await fitPhotoToTelegramLimits(attachment);
     await _client.query({
       '@type': 'editMessageMedia',
       'chat_id': chatId,
@@ -6084,6 +6090,20 @@ class ChatViewModel extends ChangeNotifier {
       // older history. Only an empty remote page confirms exhaustion.
       if (confirmsOlderHistoryExhausted(onlyLocal: onlyLocal)) {
         _hasOlderHistory = false;
+      }
+      // An empty remote latest page for an empty window means the chat has
+      // no history yet (an unstarted bot, a new DM, empty Saved Messages).
+      // No gap is possible, so live messages must join the transcript —
+      // mirroring loadLatestHistory's empty result.
+      if (confirmsEmptyChatReachesLatest(
+        onlyLocal: onlyLocal,
+        fromMessageId: fromMessageId,
+        offset: offset,
+        anchoredHistory: anchoredHistory,
+        restoredFromSession: _restoredFromSession,
+        windowLatestServerMessageId: latestServerMessageId(_allMessages),
+      )) {
+        _historyReachesLatest = true;
       }
       return false;
     }

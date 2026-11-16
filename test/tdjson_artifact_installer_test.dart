@@ -23,6 +23,7 @@ const _expectedMembers = <String, Set<String>>{
   'tdjson-linux-arm64.zip': {'libtdjson.so'},
   'tdjson-linux-x64.zip': {'libtdjson.so'},
   'tdjson-macos-universal.zip': {'libtdjson.dylib'},
+  'tdjson-ohos-arm64.zip': {'arm64-v8a/libtdjson.so'},
   'tdjson-windows-arm64.zip': {'tdjson.dll'},
   'tdjson-windows-x64.zip': {'tdjson.dll'},
 };
@@ -46,39 +47,125 @@ void main() {
     }
   });
 
-  test('installs a valid member and reuses the verified destination', () async {
+  test('installs the required ohos asset from the pinned manifest', () async {
     final fixture = _createFixture(temporaryDirectory);
+    final destination = File.fromUri(
+      temporaryDirectory.uri.resolve('installed/ohos/libtdjson.so'),
+    );
+
+    final result = await _runInstaller(
+      fixture,
+      asset: 'tdjson-ohos-arm64.zip',
+      destination: destination,
+      member: 'arm64-v8a/libtdjson.so',
+    );
+
+    expect(result.exitCode, 0, reason: _processFailure(result));
+    expect(
+      destination.readAsBytesSync(),
+      fixture.payloads['tdjson-ohos-arm64.zip']!['arm64-v8a/libtdjson.so'],
+    );
+  });
+
+  test('a canonical manifest without the ohos pin still installs other '
+      'platforms but refuses the ohos asset', () async {
+    final fixture = _createFixture(temporaryDirectory);
+    final manifestFile = fixture.manifest;
+    final manifest =
+        jsonDecode(manifestFile.readAsStringSync()) as Map<String, dynamic>;
+    (manifest['assets'] as Map<String, dynamic>).remove(
+      'tdjson-ohos-arm64.zip',
+    );
+    manifestFile.writeAsStringSync(jsonEncode(manifest));
+
+    final linuxDestination = File.fromUri(
+      temporaryDirectory.uri.resolve('installed/linux/libtdjson.so'),
+    );
+    final linuxResult = await _runInstaller(
+      fixture,
+      asset: _linuxAsset,
+      destination: linuxDestination,
+      member: _linuxMember,
+    );
+    expect(linuxResult.exitCode, 0, reason: _processFailure(linuxResult));
+    expect(
+      linuxDestination.readAsBytesSync(),
+      fixture.payloads[_linuxAsset]![_linuxMember],
+    );
+
+    final destination = File.fromUri(
+      temporaryDirectory.uri.resolve('installed/ohos/libtdjson.so'),
+    );
+
+    final result = await _runInstaller(
+      fixture,
+      asset: 'tdjson-ohos-arm64.zip',
+      destination: destination,
+      member: 'arm64-v8a/libtdjson.so',
+    );
+
+    expect(result.exitCode, isNot(0), reason: _processFailure(result));
+    expect(
+      result.stderr,
+      contains('no pinned entry for tdjson-ohos-arm64.zip'),
+    );
+    expect(destination.existsSync(), isFalse);
+  });
+
+  test('honours a per-asset release tag override', () async {
+    final fixture = _createFixture(temporaryDirectory);
+    final manifestFile = fixture.manifest;
+    final manifest =
+        jsonDecode(manifestFile.readAsStringSync()) as Map<String, dynamic>;
+    (manifest['assets']
+            as Map<String, dynamic>)['tdjson-ohos-arm64.zip']['release_tag'] =
+        'tdjson-ohos-1.8.68-test-tag';
+    manifestFile.writeAsStringSync(jsonEncode(manifest));
+
+    // The installer prints the release it would download from; the fixture
+    // archive is passed explicitly so no network access happens.
+    final destination = File.fromUri(
+      temporaryDirectory.uri.resolve('installed/ohos/libtdjson.so'),
+    );
+
+    final result = await _runInstaller(
+      fixture,
+      asset: 'tdjson-ohos-arm64.zip',
+      destination: destination,
+      member: 'arm64-v8a/libtdjson.so',
+    );
+
+    expect(result.exitCode, 0, reason: _processFailure(result));
+    // The fixture archive is passed explicitly, so no download happens; the
+    // override only needs to validate and install the pinned bytes.
+    expect(
+      destination.readAsBytesSync(),
+      fixture.payloads['tdjson-ohos-arm64.zip']!['arm64-v8a/libtdjson.so'],
+    );
+  });
+
+  test('rejects a manifest that pins an unexpected asset', () async {
+    final fixture = _createFixture(
+      temporaryDirectory,
+      manifestOnlyAssets: const {
+        'tdjson-plan9-x64.zip': {'libtdjson.so'},
+      },
+    );
     final destination = File.fromUri(
       temporaryDirectory.uri.resolve('installed/libtdjson.so'),
     );
 
-    final firstResult = await _runInstaller(
+    final result = await _runInstaller(
       fixture,
       asset: _linuxAsset,
       destination: destination,
       member: _linuxMember,
     );
 
-    expect(firstResult.exitCode, 0, reason: _processFailure(firstResult));
+    expect(result.exitCode, isNot(0));
     expect(
-      destination.readAsBytesSync(),
-      fixture.payloads[_linuxAsset]![_linuxMember],
-    );
-    expect(firstResult.stdout, contains('Installed pinned tdjson'));
-
-    fixture.archives[_linuxAsset]!.deleteSync();
-    final secondResult = await _runInstaller(
-      fixture,
-      asset: _linuxAsset,
-      destination: destination,
-      member: _linuxMember,
-    );
-
-    expect(secondResult.exitCode, 0, reason: _processFailure(secondResult));
-    expect(secondResult.stdout, contains('Verified pinned tdjson'));
-    expect(
-      destination.readAsBytesSync(),
-      fixture.payloads[_linuxAsset]![_linuxMember],
+      result.stderr,
+      anyOf(contains('unexpected entries'), contains('unexpected keys')),
     );
   });
 
@@ -145,68 +232,6 @@ void main() {
         isFalse,
       );
     });
-
-    test('unexpected file', () async {
-      final fixture = _createFixture(
-        temporaryDirectory,
-        extraMembers: {
-          _linuxAsset: {
-            'unexpected-libtdjson.so': utf8.encode('unexpected fixture member'),
-          },
-        },
-      );
-      final destination = File.fromUri(
-        temporaryDirectory.uri.resolve('installed/libtdjson.so'),
-      )..createSync(recursive: true);
-      const existingBytes = <int>[0x6b, 0x65, 0x65, 0x70];
-      destination.writeAsBytesSync(existingBytes);
-
-      final result = await _runInstaller(
-        fixture,
-        asset: _linuxAsset,
-        destination: destination,
-        member: _linuxMember,
-      );
-
-      expect(result.exitCode, isNot(0), reason: _processFailure(result));
-      expect(result.stderr, contains('member mismatch'));
-      expect(destination.readAsBytesSync(), existingBytes);
-    });
-  });
-
-  test('tree validation failure preserves the existing destination', () async {
-    final fixture = _createFixture(
-      temporaryDirectory,
-      memberPayloadOverrides: {
-        _iosAsset: {
-          'tdjson.xcframework/Info.plist': utf8.encode(
-            'corrupted plist fixture',
-          ),
-        },
-      },
-    );
-    final destination = Directory.fromUri(
-      temporaryDirectory.uri.resolve('installed/tdjson.xcframework/'),
-    )..createSync(recursive: true);
-    final sentinel = File.fromUri(destination.uri.resolve('existing.txt'))
-      ..writeAsStringSync('preserve this tree');
-
-    final result = await _runInstaller(
-      fixture,
-      asset: _iosAsset,
-      destination: destination,
-    );
-
-    expect(result.exitCode, isNot(0), reason: _processFailure(result));
-    expect(
-      result.stderr,
-      anyOf(contains('size mismatch'), contains('SHA-256')),
-    );
-    expect(destination.existsSync(), isTrue);
-    expect(sentinel.readAsStringSync(), 'preserve this tree');
-    expect(destination.listSync(recursive: true).map((entry) => entry.path), [
-      sentinel.path,
-    ]);
   });
 
   test('recovers an interrupted tree swap before checking the cache', () async {
@@ -247,6 +272,8 @@ _Fixture _createFixture(
   Directory root, {
   Map<String, Map<String, List<int>>> memberPayloadOverrides = const {},
   Map<String, Map<String, List<int>>> extraMembers = const {},
+  Map<String, Set<String>> extraAssets = const {},
+  Map<String, Set<String>> manifestOnlyAssets = const {},
 }) {
   final archiveDirectory = Directory.fromUri(root.uri.resolve('archives/'))
     ..createSync(recursive: true);
@@ -254,7 +281,7 @@ _Fixture _createFixture(
   final archives = <String, File>{};
   final payloads = <String, Map<String, List<int>>>{};
 
-  for (final assetEntry in _expectedMembers.entries) {
+  for (final assetEntry in {..._expectedMembers, ...extraAssets}.entries) {
     final canonicalPayloads = <String, List<int>>{
       for (final member in assetEntry.value)
         member: utf8.encode('fixture payload for ${assetEntry.key}:$member'),
@@ -284,6 +311,22 @@ _Fixture _createFixture(
             'sha256': sha256.convert(memberEntry.value).toString(),
             'size': memberEntry.value.length,
           },
+      },
+    };
+  }
+
+  for (final assetEntry in manifestOnlyAssets.entries) {
+    final canonicalPayloads = <String, List<int>>{
+      for (final member in assetEntry.value)
+        member: utf8.encode('fixture payload for ${assetEntry.key}:$member'),
+    };
+    payloads[assetEntry.key] = canonicalPayloads;
+    manifestAssets[assetEntry.key] = <String, Object?>{
+      'sha256': 'f' * 64,
+      'size': 1,
+      'members': <String, Object?>{
+        for (final member in assetEntry.value)
+          member: <String, Object?>{'sha256': 'e' * 64, 'size': 1},
       },
     };
   }

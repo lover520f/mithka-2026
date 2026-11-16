@@ -66,7 +66,10 @@
     <string name="accountBackupStorageOnDevice">이 기기</string>
     <string name="accountBackupTitle">계정 백업</string>
     <string name="accountBackupUnavailable">이 기기 또는 배포판에서는 계정 백업을 사용할 수 없습니다.</string>
-    <string name="accountBackupUserId">사용자 ID: {value1}</string>
+        <string name="accountPickerTitle">계정 선택</string>
+    <string name="accountPickerMessage">이 채팅은 현재 계정에 없습니다. 열 계정을 선택하세요.</string>
+    <string name="accountPickerHasChat">채팅 있음</string>
+<string name="accountBackupUserId">사용자 ID: {value1}</string>
     <string name="accountSecurityANewCodeWasSent">새로운 코드가 전송되었습니다.</string>
     <string name="accountSecurityAccountAndContactsWillMove">Telegram 계정과 연락처가 새 번호로 옮겨집니다.</string>
     <string name="accountSecurityAccountInactivity">계정 비활성</string>
@@ -529,6 +532,7 @@
     <string name="appearanceShowChatListSearch">채팅 목록 검색</string>
     <string name="appearanceShowEditAndReadMarks">수정 및 읽음 표시 보이기</string>
     <string name="appearanceShowFolderBadges">폴더 배지</string>
+    <string name="appearanceHideAllChatsFolder">‘전체’ 폴더 숨기기</string>
     <string name="appearanceShowGroupMemberTitles">그룹 멤버 직함 표시</string>
     <string name="appearanceShowMessageBubbles">메시지 말풍선 표시</string>
     <string name="appearanceShowMessageBubblesDescription">끄면 사용자 지정 말풍선 이미지가 사용되지 않고 테마 기본 말풍선이 적용됩니다. 선택한 스타일은 유지됩니다.</string>
@@ -1629,6 +1633,8 @@
     <string name="generalSendMessageWithEnter">Enter 키로 메시지 보내기</string>
     <string name="generalShowSavedMessagesIdentity">내 프로필 대신 ‘저장된 메시지’ 표시</string>
     <string name="generalStorage">저장 공간</string>
+    <string name="generalSystemPhotoPicker">시스템 사진 선택기 사용</string>
+    <string name="generalSystemPhotoPickerHint">사진 보관함 접근 권한 없이 사진과 동영상을 선택합니다. 원본 및 Live Photo 옵션은 사용할 수 없습니다.</string>
     <string name="generalTitle">일반</string>
     <string name="gesturesChatActions">채팅 동작</string>
     <string name="gesturesChatActionsModeDescription">한 손가락: 채팅 동작 · 두 손가락: 폴더 전환 · 세 손가락: 계정 전환</string>
@@ -2069,6 +2075,10 @@
     <string name="linkHandlerTelegramStarsCount">{value1} 텔레그램 스타</string>
     <string name="linkHandlerUnsupportedTelegramLink">이 Telegram 링크 열기는 아직 지원되지 않습니다</string>
     <string name="linkHandlerWritingStyle">글쓰기 스타일</string>
+    <string name="linkLogInToOpen">로그인하면 이 링크를 열 수 있습니다.</string>
+    <string name="linkNotTelegramLink">Mithka에서는 Telegram 링크만 열 수 있습니다.</string>
+    <string name="linkOpenTmeInMithka">t.me 링크를 Mithka에서 열기</string>
+    <string name="linkOpenTmeInMithkaHint">Android 설정에서 t.me를 Mithka로 여는 링크로 추가하세요. Telegram이 설치되어 있다면 먼저 Telegram의 링크 열기를 끄세요.</string>
     <string name="listSeparator" xml:space="preserve">, </string>
     <string name="locationDetailFetchingLocation">위치 가져오는 중…</string>
     <string name="locationPickerDragMapToChoose">지도를 드래그해 위치 선택</string>
@@ -2529,6 +2539,7 @@
     <string name="passkeysRemoved">패스키를 삭제했습니다</string>
     <string name="passkeysTitle">패스키</string>
     <string name="passkeysUnknownName">이름 없는 패스키</string>
+    <string name="pickerSystemPicker">시스템 선택기</string>
     <string name="pinnedMessagesEmpty">고정된 메시지가 없습니다</string>
     <string name="pinnedMessagesSentBy">{value1} 보냄</string>
     <string name="pollComposerAddOption">옵션 추가</string>
@@ -2773,6 +2784,7 @@
     <string name="proxyHostOrIp">호스트 또는 IP</string>
     <string name="proxyOptional">선택 사항</string>
     <string name="proxyPassword">비밀번호</string>
+    <string name="proxyPath">경로</string>
     <string name="proxyPort">포트</string>
     <string name="proxySecret">비밀 키</string>
     <string name="proxyServer">서버</string>
@@ -3658,7 +3670,9 @@
     <string name="topicChatLoading">불러오는 중</string>
     <string name="topicChatMarkAllRead">Mark all as read</string>
     <string name="topicChatMarkAllReadFailed">Failed to mark all topics as read</string>
-    <string name="topicChatMemberCount">{value1}명</string>
+    <plurals name="topicChatMemberCount">
+        <item quantity="other">{count}명</item>
+    </plurals>
     <string name="topicChatMostRelevant">관련도순</string>
     <string name="topicChatMuteFailed">방해 금지 설정에 실패했습니다</string>
     <string name="topicChatMuteMessagesToggle">메시지 방해 금지</string>
@@ -3778,6 +3792,7 @@
     <string name="videoPlayerPlaying">재생 중</string>
     <string name="videoPlayerSeekBackwardTenSeconds">10초 뒤로</string>
     <string name="videoPlayerSeekForwardTenSeconds">10초 앞으로</string>
+    <string name="videoPlayerHoldPlaybackSpeed">길게 눌러 빠르게 재생</string>
     <string name="videoPlayerStreamInspector">스트림 검사기</string>
     <string name="videoPlayerVideoNumber">동영상 {value1}</string>
     <string name="videoPlayerVideoZoom">동영상 확대</string>
@@ -3916,4 +3931,15 @@
     <plurals name="giftDurationDays">
         <item quantity="other">{count}일</item>
     </plurals>
+    <string name="storageDownloadLocation">다운로드 위치</string>
+    <string name="storageDownloadCacheLocation">다운로드 캐시</string>
+    <string name="storageDownloadSaveFolder">파일 저장 폴더</string>
+    <string name="storageDownloadShared">공유 저장소</string>
+    <string name="storageDownloadPrivate">앱 전용 내부 저장소</string>
+    <string name="storageDownloadRestart">변경 사항은 Mithka를 다음에 시작할 때 적용됩니다. 기존 다운로드는 자동으로 이동됩니다.</string>
+    <string name="storageDownloadSaveHint">다운로드 화면의 다른 이름으로 저장을 사용하면 여기에 파일을 복사할 수 있습니다. 저장한 사본은 Mithka를 삭제해도 유지됩니다.</string>
+    <string name="storageDownloadMigrationFailed">다운로드를 이동하지 못했습니다. 기존 위치를 계속 사용하며 다음 시작 시 다시 시도합니다.</string>
+    <string name="storageDownloadLocationFailed">다운로드 위치에 접근할 수 없습니다</string>
+    <string name="storageDownloadFolderNotSelected">폴더 선택</string>
+    <string name="storageDownloadCurrent">현재 위치: {value1}</string>
 </resources>

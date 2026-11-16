@@ -37,6 +37,7 @@ enum VideoNoteExportError: Error, Sendable {
   private var groupCallMediaBridge: TelegramGroupCallMediaBridge?
   private var mediaDropBridge: MediaDropBridge?
   private var telegramPasskeyBridge: TelegramPasskeyBridge?
+  private var webProxyBridge: WebProxyBridge?
   private var premiumAuthPurchaseBridge: PremiumAuthPurchaseBridge?
   private var mithkaProBridge: MithkaProBridge?
   private var nowPlayingBridge: NowPlayingBridge?
@@ -48,6 +49,7 @@ enum VideoNoteExportError: Error, Sendable {
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     configureNativeSentryIfNeeded()
+    startAirCrashReportsIfAvailable()
     // flutter_local_notifications registers through FlutterAppDelegate. iOS
     // only forwards tap callbacks to it when the app delegate is explicitly
     // installed as the notification-center delegate.
@@ -141,6 +143,18 @@ enum VideoNoteExportError: Error, Sendable {
       "width": Double(window.bounds.width),
       "regions": regions,
     ]
+  }
+
+  /// AirFeedback crash reports (MetricKit), alongside Sentry. MetricKit
+  /// allows several subscribers, so this does not affect Sentry. The key is
+  /// AirFeedback's public ingest key: it can only submit reports.
+  private func startAirCrashReportsIfAvailable() {
+    guard #available(iOS 16.0, *) else { return }
+    AirCrashReports.start(
+      apiKey: "ak_production_Knmbmr-NVDAz2VycHPJpjcU06Cr73h9T-6qdA9PrW70",
+      endpoint: "https://apps.air.build/v1/ingest/crashes",
+      teamID: "7P8CLHDH5G"
+    )
   }
 
   private func configureNativeSentryIfNeeded() {
@@ -825,6 +839,7 @@ enum VideoNoteExportError: Error, Sendable {
     telegramPasskeyBridge = TelegramPasskeyBridge(
       messenger: engineBridge.applicationRegistrar.messenger()
     )
+    webProxyBridge = WebProxyBridge(messenger: engineBridge.applicationRegistrar.messenger())
     premiumAuthPurchaseBridge = PremiumAuthPurchaseBridge(
       messenger: engineBridge.applicationRegistrar.messenger()
     )

@@ -33,6 +33,7 @@ import '../bot_api/bot_api_endpoint_config.dart';
 import '../bot_api/bot_api_td_backend.dart';
 import '../config/secrets.dart';
 import '../settings/api_credentials_config.dart';
+import '../settings/download_storage.dart';
 import '../settings/proxy_config.dart';
 import '../settings/transfer_boost_config.dart';
 import 'avatar_animation_index.dart';
@@ -42,6 +43,7 @@ import 'json_helpers.dart';
 import 'td_bindings.dart';
 import 'td_session_string.dart';
 import 'td_user_index.dart';
+import 'web_proxy_carrier.dart';
 
 /// An error returned by TDLib (its "error" object).
 class TdError implements Exception {
@@ -234,6 +236,7 @@ class TdClient {
   TdClient._();
   static final TdClient shared = TdClient._();
   static const defaultQueryTimeout = Duration(seconds: 30);
+  WebProxyCarriers? _webProxyCarriers;
 
   /// A private instance for tests that exercise the real restore lifecycle
   /// against synthetic bindings instead of tdjson.
@@ -275,6 +278,19 @@ class TdClient {
   void debugCompleteClientClosed(int clientId) {
     _clientClosedWaiters.remove(clientId)?.complete();
   }
+
+  /// Observes every request the proxy would answer, with the client id it is
+  /// routed to. Tests use this to assert which account's client actually
+  /// served a screen (production equivalence for account-keyed subtrees).
+  @visibleForTesting
+  void debugSetQueryRecorder(
+    void Function(Map<String, dynamic> request, int clientId)? recorder,
+  ) {
+    _debugQueryRecorder = recorder;
+  }
+
+  void Function(Map<String, dynamic> request, int clientId)?
+  _debugQueryRecorder;
 
   // Lazy: only opened when first used, so demo/simulator builds (no tdjson) can
   // touch the singleton (e.g. read activeSlot) without resolving symbols.
@@ -556,6 +572,13 @@ class TdClient {
           : 0,
     );
     _supportDir = supportDir.path;
+    if (Platform.isAndroid) {
+      await DownloadStorage.prepare(
+        support: supportDir,
+        prefs: _prefs,
+        availableRoots: await DownloadStorage.locations(),
+      );
+    }
     if (kDebugMode) await _closeStaleDebugClients();
 
     final storedBotApiAccounts = BotApiAccountRegistry.load(_prefs);
@@ -1032,7 +1055,9 @@ class TdClient {
       account: account,
       token: token,
       databasePath: '$directory/history.sqlite3',
-      mediaDirectory: '$directory/files',
+      mediaDirectory: Platform.isAndroid && DownloadStorage.currentRoot != null
+          ? '${DownloadStorage.currentRoot}/bot-api/account-${account.slot}/files'
+          : '$directory/files',
       emit: (update) => _route({...update, '@client_id': clientId}),
     );
   }
@@ -1761,6 +1786,17 @@ class TdClient {
   }
 
   Future<void> _deleteSlotDataNow(int slot) async {
+    final downloadsRoot = DownloadStorage.currentRoot;
+    if (Platform.isAndroid &&
+        downloadsRoot != null &&
+        downloadsRoot != _supportDir) {
+      await _deleteDirectoryIfPresent(
+        Directory(DownloadStorage.filesDirectory(downloadsRoot, slot)),
+      );
+      await _deleteDirectoryIfPresent(
+        Directory('$downloadsRoot/bot-api/account-$slot/files'),
+      );
+    }
     final botApiDirectory = Directory(_botApiDataDirectory(slot));
     if (await botApiDirectory.exists()) {
       await _deleteDirectoryIfPresent(botApiDirectory);
@@ -1983,11 +2019,18 @@ class TdClient {
 
     if (object.type == 'updateAuthorizationState' &&
         object.obj('authorization_state')?.type == 'authorizationStateClosed') {
+      _webProxyCarriers?.closeClient(clientId);
       TdUserIndex.shared.clearSlot(slot);
       ForumTopicIndex.shared.clearSlot(slot);
       _unconfirmedSlotForClient.remove(clientId);
       final waiter = _clientClosedWaiters.remove(clientId);
       if (waiter != null && !waiter.isCompleted) waiter.complete();
+    }
+    if (object.type == 'updateWebProxyCarrierOpened' ||
+        object.type == 'updateWebProxyCarrierData' ||
+        object.type == 'updateWebProxyCarrierClosed') {
+      (_webProxyCarriers ??= WebProxyCarriers(sendTo)).handle(object);
+      return;
     }
     // Bootstrap ANY client that asks for parameters, so every account
     // initializes and stays logged in (not just the active one).
@@ -2093,7 +2136,9 @@ class TdClient {
     if (slot == null) return;
 
     final dbDir = _databaseDirectory(slot);
-    final filesDir = '$dbDir/files';
+    final filesDir = Platform.isAndroid && DownloadStorage.currentRoot != null
+        ? DownloadStorage.filesDirectory(DownloadStorage.currentRoot!, slot)
+        : '$dbDir/files';
     final api = ApiCredentialsConfig.fromPrefs(_prefs);
     final useCustomApi = api.isUsable;
 
@@ -2183,6 +2228,12 @@ class TdClient {
 
   Future<void> _applySavedProxyToClient(int clientId) async {
     final config = await ProxyConfig.load();
+    if (config.type == 'web' && !ProxyConfig.supportsWebProxy) {
+      // Saved settings can arrive from another platform. Keep the account
+      // usable when this host has no WebView transport.
+      await queryTo({'@type': 'disableProxy'}, clientId);
+      return;
+    }
     await _applyProxyConfigToClient(config, clientId);
   }
 
@@ -2191,6 +2242,11 @@ class TdClient {
     int clientId,
   ) async {
     if (!config.configured) return;
+    if (config.enabled &&
+        config.type == 'web' &&
+        !ProxyConfig.supportsWebProxy) {
+      throw UnsupportedError('Web proxies require Android, iOS, or macOS');
+    }
     if (!config.isUsable) {
       try {
         await queryTo({
@@ -2228,7 +2284,7 @@ class TdClient {
           'proxy_id': id,
         }, clientId).timeout(const Duration(seconds: 8));
         unawaited(
-          queryTo({'@type': 'pingProxy', 'proxy_id': id}, clientId)
+          queryTo({'@type': 'pingProxy', 'proxy': config.tdProxy}, clientId)
               .then((result) {
                 debugPrint('🌐 [Mithka] proxy ping result: $result');
               })
@@ -2362,10 +2418,9 @@ class TdClient {
     }
     final debugQuery = _debugQueryOverride;
     if (debugQuery != null) {
-      final result = await debugQuery(
-        Map<String, dynamic>.from(request),
-        clientId,
-      );
+      final recorded = Map<String, dynamic>.from(request);
+      _debugQueryRecorder?.call(recorded, clientId);
+      final result = await debugQuery(recorded, clientId);
       if (result.type == 'error') throw TdError(result);
       return result;
     }

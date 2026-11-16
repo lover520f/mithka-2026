@@ -71,6 +71,7 @@ import 'notifications/notification_preferences.dart';
 import 'notifications/push_device_registrar.dart';
 import 'platform/application_exit_coordinator.dart';
 import 'platform/firebase_configuration.dart';
+import 'platform/ohos_support.dart';
 import 'platform/system_ui.dart';
 import 'pro/mithka_pro_service.dart';
 import 'security/local_app_lock_controller.dart';
@@ -220,10 +221,9 @@ Future<void> _bootstrapAndRunApp() async {
   // launch, and nothing below depends on it — the widget tree attaches to
   // AuthManager's stream whenever it is ready.
   final auth = AuthManager()..start();
+  registerOhosDartPluginFallbacks();
   _initializeVideoBackend();
-  final isMobile =
-      defaultTargetPlatform == TargetPlatform.iOS ||
-      defaultTargetPlatform == TargetPlatform.android;
+  final isMobile = isMobilePlatform;
   if (isMobile) {
     // Let iPhone and iPad follow every physical orientation. Desktop windows
     // have no orientation/system bars — skip both platform-channel round
@@ -240,6 +240,11 @@ Future<void> _bootstrapAndRunApp() async {
     // Draw under transparent status / navigation bars (edge-to-edge).
     configureImmersiveSystemUI();
   }
+  // Neither of these reads the preferences, so their platform round trips
+  // (the lock's keystore read is the slow one on Android) start now instead
+  // of queueing behind the preferences load.
+  final appLockReady = LocalAppLockController.shared.initialize();
+  final videoViewTypeReady = initializeCompatibleVideoViewType();
   final prefs = await SharedPreferences.getInstance();
   // These must land before the first frame — the catalogue or early widgets
   // render bare keys, the lock or the chat list flashes before the gate, and
@@ -247,9 +252,9 @@ Future<void> _bootstrapAndRunApp() async {
   // platform and asset reads are independent, so they overlap.
   await Future.wait<void>([
     _preloadLocaleCatalogue(prefs),
-    LocalAppLockController.shared.initialize(),
+    appLockReady,
     ThemeController.preloadCachedEmojiFont(prefs),
-    initializeCompatibleVideoViewType(),
+    videoViewTypeReady,
   ]);
   DesktopHotkeyController.initializeShared(prefs, replace: true);
   KeywordBlocker.shared.initialize(prefs);
@@ -320,6 +325,8 @@ void _initializeVideoBackend({bool installGlobalLogHandler = true}) {
           FVideoFvpPlatform.linux,
           FVideoFvpPlatform.macos,
           FVideoFvpPlatform.windows,
+          // video_player has no HarmonyOS implementation of its own.
+          FVideoFvpPlatform.ohos,
         },
         installGlobalLogHandler: installGlobalLogHandler,
       ),
@@ -513,7 +520,7 @@ class _MithkaAppState extends State<MithkaApp> with WidgetsBindingObserver {
     );
     _autoDownload.initialize(widget.prefs);
     _auth.start();
-    DeepLinkService.shared.start();
+    DeepLinkService.shared.start(auth: _auth, appLock: _appLock);
     HandoffService.shared.start(
       accounts: _accounts,
       auth: _auth,

@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../components/app_icons.dart';
 import '../components/ui_components.dart';
 import '../l10n/app_localizations.dart';
+import '../platform/external_links.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_controller.dart';
@@ -48,9 +49,9 @@ bool internalBrowserSupported({TargetPlatform? platform, bool isWeb = kIsWeb}) {
     TargetPlatform.android ||
     TargetPlatform.iOS ||
     TargetPlatform.macOS => true,
-    TargetPlatform.fuchsia ||
-    TargetPlatform.linux ||
-    TargetPlatform.windows => false,
+    // Desktop, fuchsia, and the ohos fork's extra enum value fall back to the
+    // system browser instead of throwing.
+    _ => false,
   };
 }
 
@@ -137,8 +138,23 @@ bool linkCanOpenExternally(Uri uri) {
       }.contains(scheme);
 }
 
+/// Opens [uri] outside Mithka. Returns false when nothing opened it, including
+/// when handing it over could only reopen Mithka; the caller shows a notice.
 Future<bool> launchInDefaultBrowser(Uri uri) async {
   if (!linkCanOpenExternally(uri)) return false;
+  // Loop guard: Mithka claims tg:// (and on Android, once approved, t.me), so
+  // a generic launch of a link Mithka could not open in-app could come
+  // straight back. See externalLaunchRouteFor.
+  switch (externalLaunchRouteFor(uri)) {
+    case ExternalLaunchRoute.notice:
+      return false;
+    case ExternalLaunchRoute.bridge:
+      // A missing bridge (an engine without the plugin) is not a reason to
+      // fall back to url_launcher: that is exactly the launch that loops.
+      return await ExternalLinksPlatform.openExternally(uri) ?? false;
+    case ExternalLaunchRoute.generic:
+      break;
+  }
   // Android 11 package visibility can make canLaunchUrl report a false
   // negative. Attempt the launch directly, retaining the established fallback.
   for (final mode in const [

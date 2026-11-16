@@ -14,6 +14,7 @@ import '../components/ui_components.dart';
 import '../l10n/app_localizations.dart';
 import '../platform/desktop_clipboard_images.dart';
 import '../platform/keyboard_modifiers.dart';
+import '../platform/ohos_support.dart';
 import '../tdlib/td_image_loader.dart';
 import '../tdlib/td_models.dart';
 import '../theme/app_theme.dart';
@@ -24,6 +25,27 @@ import 'desktop_image_preview_window_stub.dart'
 import 'desktop_media_window_registry.dart';
 
 export 'desktop_image_preview_window_models.dart';
+
+/// Most images one independent preview window carries at launch.
+const int desktopImagePreviewWindowMaxItems = 64;
+
+/// The bounded slice of a gallery that opens in an independent window.
+///
+/// Galleries such as Moments, comments and Shared Media hand over every photo
+/// in the chat. Keeping only the first [maxItems] and clamping the tapped
+/// index into them opened a different image whenever the tapped photo sat
+/// past that limit, so the slice is centred on the tapped photo instead.
+@visibleForTesting
+({int first, int initialIndex, int count}) desktopImagePreviewWindowSlice(
+  int length,
+  int startIndex, {
+  int maxItems = desktopImagePreviewWindowMaxItems,
+}) {
+  final selected = startIndex.clamp(0, length - 1);
+  final count = length < maxItems ? length : maxItems;
+  final first = (selected - count ~/ 2).clamp(0, length - count);
+  return (first: first, initialIndex: selected - first, count: count);
+}
 
 class DesktopImagePreviewWindowService {
   DesktopImagePreviewWindowService._();
@@ -46,8 +68,12 @@ class DesktopImagePreviewWindowService {
     required bool dark,
   }) async {
     if (!isSupported || images.isEmpty) return false;
-    final safeImages = images.take(64).toList(growable: false);
-    final initialIndex = startIndex.clamp(0, safeImages.length - 1);
+    final slice = desktopImagePreviewWindowSlice(images.length, startIndex);
+    final safeImages = images
+        .skip(slice.first)
+        .take(slice.count)
+        .toList(growable: false);
+    final initialIndex = slice.initialIndex;
     final imageId = safeImages[initialIndex].id;
     if (_windows.isOpening(imageId)) return true;
     final existing = _windows.windowFor(imageId);
@@ -304,7 +330,7 @@ class _DesktopImagePreviewState extends State<_DesktopImagePreview> {
         bytes: bytes,
       );
       if (selected == null) return;
-      if (!Platform.isAndroid && !Platform.isIOS) {
+      if (!isMobilePlatform) {
         await File(selected).writeAsBytes(bytes, flush: true);
       }
       _showStatus(AppStrings.t(AppStringKeys.accentColorPickerSave));
